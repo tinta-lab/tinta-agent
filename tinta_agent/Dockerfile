@@ -1,16 +1,22 @@
 ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.19
 FROM $BUILD_FROM
 
-# Install Node.js 20
+# Install Node.js 20 + npm
 RUN apk add --no-cache nodejs npm
 
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --production
+# Install ALL deps (including devDeps for tsc build)
+COPY package.json ./
+RUN npm install
 
-COPY . .
+# Copy source and build
+COPY tsconfig.json ./
+COPY src ./src
 RUN npm run build
+
+# Remove devDependencies after build
+RUN npm prune --production
 
 COPY run.sh /
 RUN chmod a+x /run.sh

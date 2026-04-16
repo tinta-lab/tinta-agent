@@ -1,7 +1,7 @@
 import * as http from 'http';
 import * as os from 'os';
 import * as fs from 'fs';
-import { HAWebSocketClient, getSupervisorToken } from './websocket-ha';
+import { HAWebSocketClient } from './websocket-ha';
 import { TintaCoreSocket } from './websocket-core';
 import { haStateToTintaEntity, buildHACommand } from './entities';
 
@@ -40,9 +40,13 @@ function getMemPercent(): number {
 
 function getDiskPercent(): number {
   try {
-    const stat = fs.statfsSync('/');
-    const used = stat.blocks - stat.bfree;
-    return (used / stat.blocks) * 100;
+    // fs.statfsSync available Node 19+; fallback gracefully
+    const statfs = (fs as any).statfsSync;
+    if (typeof statfs === 'function') {
+      const stat = statfs('/');
+      return ((stat.blocks - stat.bfree) / stat.blocks) * 100;
+    }
+    return 0;
   } catch {
     return 0;
   }

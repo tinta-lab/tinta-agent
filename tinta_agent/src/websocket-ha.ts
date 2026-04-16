@@ -1,5 +1,4 @@
 import * as http from 'http';
-import * as https from 'https';
 
 // HA WebSocket API client using native ws
 // home-assistant-js-websocket requires ESM, so we implement a minimal client

@@ -1,0 +1,5 @@
+tinta_agent/node_modules/
+tinta_agent/dist/
+node_modules/
+dist/
+*.log
