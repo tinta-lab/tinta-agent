@@ -1,0 +1,48 @@
+name: "Tinta Agent"
+description: "Abstraction & management layer for Tinta Lab (Zero Trust managed Home Assistant)"
+version: "2026.4.1"
+slug: "tinta_agent"
+init: false
+
+arch:
+  - aarch64
+  - amd64
+
+startup: services
+boot: auto
+
+homeassistant: "2025.12.0"
+hassio_role: homeassistant
+hassio_api: true
+homeassistant_api: true
+ingress: false
+ports: {}
+
+map:
+  - homeassistant_config:rw
+  - share
+
+options:
+  tinta_client_id: ""
+  tinta_core_ws: "wss://api.tinta-lab.de/tinta/ws"
+  tinta_agent_token: ""
+  log_level: "info"
+
+schema:
+  tinta_client_id:
+    required: true
+    type: str
+  tinta_core_ws:
+    required: true
+    type: str
+  tinta_agent_token:
+    required: true
+    type: str
+  log_level:
+    required: false
+    type: str
+    default: "info"
+
+watchdog: "tcp://[HOST]:8123"
+
+image: "ghcr.io/tinta-lab/tinta-agent"
