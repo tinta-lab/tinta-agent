@@ -16,11 +16,9 @@ homeassistant: "2024.1.0"
 hassio_role: homeassistant
 hassio_api: true
 homeassistant_api: true
-ingress: false
-ports: {}
 
 map:
-  - homeassistant_config:rw
+  - config:rw
 
 options:
   tinta_client_id: ""
