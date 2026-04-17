@@ -56,13 +56,16 @@ async function getHAVersion(): Promise<string> {
   return new Promise(resolve => {
     const supervisorToken = process.env.SUPERVISOR_TOKEN;
     if (!supervisorToken) { resolve('unknown'); return; }
+    const haHost = process.env.HA_HOST ?? 'supervisor';
+    const haPort = parseInt(process.env.HA_PORT ?? '8123', 10);
+    // Try HA REST API first (works both inside and outside HAOS)
     const req = http.get(
-      { host: 'supervisor', port: 80, path: '/core/info', headers: { Authorization: `Bearer ${supervisorToken}` } },
+      { host: haHost, port: haPort, path: '/api/config', headers: { Authorization: `Bearer ${supervisorToken}` } },
       res => {
         let body = '';
         res.on('data', d => (body += d));
         res.on('end', () => {
-          try { resolve(JSON.parse(body)?.data?.version ?? 'unknown'); }
+          try { resolve(JSON.parse(body)?.version ?? 'unknown'); }
           catch { resolve('unknown'); }
         });
       },
