@@ -77,10 +77,11 @@ async function setExternalUrl(opts: HAConfiguratorOptions): Promise<void> {
     return;
   }
 
-  const internalUrl = `http${opts.ssl ? 's' : ''}://${opts.haHost}:${opts.haPort}`;
+  // In supervisor proxy mode haHost is 'supervisor' — use HA_INTERNAL_URL env or skip internal_url.
+  const internalUrl = process.env.HA_INTERNAL_URL ?? (opts.supervisorProxy ? undefined : `http${opts.ssl ? 's' : ''}://${opts.haHost}:${opts.haPort}`);
   const upd = await haRequest(opts, 'POST', '/api/config/core/update', {
     external_url: opts.externalUrl,
-    internal_url: internalUrl,
+    ...(internalUrl ? { internal_url: internalUrl } : {}),
   });
   if (upd.status !== 200) throw new Error(`Failed to set external_url: ${upd.status}`);
   console.log(`[HA Configurator] external_url set to ${opts.externalUrl}`);
@@ -172,9 +173,15 @@ export async function configureHAForTunnel(opts: HAConfiguratorOptions): Promise
     return;
   }
 
+  // external_url — best-effort; don't abort trusted_proxies setup if this fails
   try {
     await setExternalUrl(opts);
+  } catch (err: any) {
+    console.warn(`[HA Configurator] Could not set external_url: ${err.message}`);
+  }
 
+  // trusted_proxies — runs independently of external_url result
+  try {
     const configDir = process.env.HA_CONFIG_DIR ?? '/config';
     const needsRestart = ensureHttpTrustedProxies(configDir);
 
@@ -186,6 +193,6 @@ export async function configureHAForTunnel(opts: HAConfiguratorOptions): Promise
       log('⚠ Restart HA Core manually to apply trusted_proxies');
     }
   } catch (err: any) {
-    console.warn(`[HA Configurator] Warning: ${err.message} — skipping auto-configuration`);
+    console.warn(`[HA Configurator] trusted_proxies setup failed: ${err.message}`);
   }
 }

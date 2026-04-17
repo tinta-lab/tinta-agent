@@ -10,7 +10,7 @@ const CLIENT_ID      = process.env.TINTA_CLIENT_ID!;
 const CORE_WS        = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
 const AGENT_TOKEN    = process.env.TINTA_AGENT_TOKEN!;
 const EXTERNAL_URL   = process.env.TINTA_EXTERNAL_URL ?? '';
-const AGENT_VERSION  = '2026.4.3';
+const AGENT_VERSION  = '2026.4.4';
 
 // When HA_HOST=homeassistant the agent is running as a HA Supervisor addon.
 // In that case all HA traffic must go through the supervisor proxy (supervisor:80).
