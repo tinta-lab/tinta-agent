@@ -13,13 +13,29 @@ export interface GoldenTemplate {
   automation: Record<string, any>;
 }
 
+export interface DiagnosticsReport {
+  clientId: string;
+  agentVersion: string;
+  haVersion: string;
+  haConnected: boolean;
+  uptimeSeconds: number;
+  nodeVersion: string;
+  platform: string;
+  cpuPercent: number;
+  memPercent: number;
+  diskPercent: number;
+  timestamp: string;
+}
+
 type CommandHandler = (cmd: TintaCommand) => Promise<void>;
 type TemplateHandler = (template: GoldenTemplate) => Promise<void>;
+type DiagnosticsProvider = () => DiagnosticsReport;
 
 export class TintaCoreSocket {
   private socket!: Socket;
   private commandHandler: CommandHandler | null = null;
   private templateHandler: TemplateHandler | null = null;
+  private diagnosticsProvider: DiagnosticsProvider | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
 
   constructor(
@@ -31,7 +47,7 @@ export class TintaCoreSocket {
   ) {}
 
   connect() {
-    console.log(`[Tinta Core] Connecting to ${this.coreWsUrl}...`);
+    log('Connecting to', this.coreWsUrl);
 
     this.socket = io(this.coreWsUrl, {
       auth: { token: this.agentToken, clientId: this.clientId },
@@ -42,7 +58,7 @@ export class TintaCoreSocket {
     });
 
     this.socket.on('connect', () => {
-      console.log('[Tinta Core] Connected');
+      log('Connected');
       this.socket.emit('register', {
         clientId: this.clientId,
         jwt: this.agentToken,
@@ -53,16 +69,16 @@ export class TintaCoreSocket {
     });
 
     this.socket.on('disconnect', (reason: string) => {
-      console.warn(`[Tinta Core] Disconnected: ${reason}`);
+      log('Disconnected:', reason);
       this.stopHeartbeat();
     });
 
     this.socket.on('connect_error', (err: Error) => {
-      console.error(`[Tinta Core] Connection error: ${err.message}`);
+      log('Connection error:', err.message);
     });
 
     this.socket.on('command', async (cmd: TintaCommand) => {
-      console.log(`[Tinta Core] Command received: ${cmd.entityType}.${cmd.action} → ${cmd.haEntityId}`);
+      log(`Command: ${cmd.entityType}.${cmd.action} → ${cmd.haEntityId}`);
       if (this.commandHandler) {
         try {
           await this.commandHandler(cmd);
@@ -74,7 +90,7 @@ export class TintaCoreSocket {
     });
 
     this.socket.on('apply_template', async (template: GoldenTemplate) => {
-      console.log(`[Tinta Core] Apply template: ${template.slug}`);
+      log('Apply template:', template.slug);
       if (this.templateHandler) {
         try {
           await this.templateHandler(template);
@@ -84,15 +100,31 @@ export class TintaCoreSocket {
         }
       }
     });
+
+    // Remote diagnostics request from Core
+    this.socket.on('diagnostics_request', () => {
+      log('Diagnostics requested by Core');
+      if (this.diagnosticsProvider) {
+        const report = this.diagnosticsProvider();
+        this.socket.emit('diagnostics_report', report);
+        log('Diagnostics sent');
+      }
+    });
+
+    // Remote log request: return last N lines of stdout (if available)
+    this.socket.on('logs_request', ({ lines = 50 }: { lines?: number }) => {
+      log(`Log upload requested (${lines} lines)`);
+      this.socket.emit('logs_report', {
+        clientId: this.clientId,
+        message: 'Log streaming not yet implemented — check PM2 logs on host',
+        timestamp: new Date().toISOString(),
+      });
+    });
   }
 
-  onCommand(handler: CommandHandler) {
-    this.commandHandler = handler;
-  }
-
-  onApplyTemplate(handler: TemplateHandler) {
-    this.templateHandler = handler;
-  }
+  onCommand(handler: CommandHandler) { this.commandHandler = handler; }
+  onApplyTemplate(handler: TemplateHandler) { this.templateHandler = handler; }
+  onDiagnostics(provider: DiagnosticsProvider) { this.diagnosticsProvider = provider; }
 
   sendStateUpdate(entities: Record<string, any>[]) {
     if (this.socket?.connected) {
@@ -114,11 +146,16 @@ export class TintaCoreSocket {
     }
   }
 
+  isConnected() { return this.socket?.connected ?? false; }
+
   private startHeartbeat() {
     this.stopHeartbeat();
     this.heartbeatInterval = setInterval(() => {
       if (this.socket?.connected) {
-        this.socket.emit('heartbeat', { clientId: this.clientId });
+        this.socket.emit('heartbeat', {
+          clientId: this.clientId,
+          ts: Date.now(),
+        });
       }
     }, 30_000);
   }
@@ -134,4 +171,8 @@ export class TintaCoreSocket {
     this.stopHeartbeat();
     this.socket?.disconnect();
   }
+}
+
+function log(...args: any[]) {
+  console.log(`[Tinta Core] ${args.join(' ')}`);
 }

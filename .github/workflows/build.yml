@@ -7,6 +7,7 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  IMAGE: ghcr.io/tinta-lab/tinta-agent
 
 jobs:
   build:
@@ -14,6 +15,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write   # for trivy SARIF upload
 
     steps:
       - uses: actions/checkout@v4
@@ -29,22 +31,64 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Get version
+      # ── Resolve version + channel ──────────────────────────────────────
+      - name: Resolve version and channel
         id: meta
         run: |
-          if [[ $GITHUB_REF == refs/tags/* ]]; then
-            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          REF="${GITHUB_REF}"
+          if [[ $REF == refs/tags/* ]]; then
+            VERSION="${REF#refs/tags/}"
+            # beta tag: v1.0.0-beta.1 or 2026.4.1-beta
+            if [[ $VERSION == *-beta* ]]; then
+              CHANNEL="beta"
+            else
+              CHANNEL="stable"
+            fi
+            # major.minor alias: 2026.4.1 → 2026.4
+            MINOR_ALIAS="${VERSION%.*}"
           else
-            echo "version=dev" >> $GITHUB_OUTPUT
+            VERSION="dev"
+            CHANNEL="dev"
+            MINOR_ALIAS=""
           fi
+          echo "version=$VERSION"     >> $GITHUB_OUTPUT
+          echo "channel=$CHANNEL"     >> $GITHUB_OUTPUT
+          echo "minor_alias=$MINOR_ALIAS" >> $GITHUB_OUTPUT
+          echo "Channel: $CHANNEL  Version: $VERSION"
 
+      # ── Build & push multi-arch ────────────────────────────────────────
       - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: ./tinta_agent
           file: ./tinta_agent/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
           tags: |
-            ghcr.io/tinta-lab/tinta-agent:${{ steps.meta.outputs.version }}
-            ghcr.io/tinta-lab/tinta-agent:latest
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.channel }}
+            ${{ steps.meta.outputs.minor_alias != '' && format('{0}:{1}', env.IMAGE, steps.meta.outputs.minor_alias) || '' }}
+          labels: |
+            org.opencontainers.image.title=Tinta Agent
+            org.opencontainers.image.description=Tinta Lab Home Assistant Agent
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.source=https://github.com/tinta-lab/tinta-agent
+            org.opencontainers.image.licenses=UNLICENSED
+
+      # ── Security scan (amd64 manifest) ────────────────────────────────
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'           # don't fail build, just report
+
+      - name: Upload Trivy SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-results.sarif
+        continue-on-error: true   # SARIF upload requires Advanced Security (may not be available on org)
