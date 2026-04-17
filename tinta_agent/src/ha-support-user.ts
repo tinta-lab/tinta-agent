@@ -13,7 +13,7 @@ function copyAvatar(): void {
     fs.mkdirSync('/config/www', { recursive: true });
     fs.copyFileSync(AVATAR_SRC, AVATAR_WWW);
     console.log('[HA Support User] Avatar copied to /config/www/tinta_support.png');
-  } catch { /* optional step */ }
+  } catch { /* optional */ }
 }
 
 export async function ensureSupportUser(
@@ -23,41 +23,43 @@ export async function ensureSupportUser(
   const log = (m: string) => console.log(`[HA Support User] ${m}`);
 
   try {
-    // Check if credentials already exist
-    const credentials = await haClient.sendCommand<any[]>({
-      type: 'config/auth_provider/homeassistant/list',
-    });
+    // config/auth/list returns array of users directly
+    const users = await haClient.sendCommand<any[]>({ type: 'config/auth/list' });
+    const exists = users.some(u => u.name === SUPPORT_NAME && !u.system_generated);
 
-    if (credentials.some((c: any) => c.username === SUPPORT_USERNAME)) {
-      log(`${SUPPORT_USERNAME} already exists ✓`);
+    if (exists) {
+      log(`"${SUPPORT_NAME}" already exists ✓`);
       copyAvatar();
       return;
     }
 
-    // Create auth user with admin role
-    const user = await haClient.sendCommand<any>({
+    // config/auth/create returns { user: { id, name, ... } }
+    const result = await haClient.sendCommand<{ user: { id: string } }>({
       type: 'config/auth/create',
       name: SUPPORT_NAME,
       group_ids: ['system-admin'],
     });
+    const userId = result.user.id;
 
-    // Link username + password
+    // Link username + password to the new user
     await haClient.sendCommand({
       type: 'config/auth_provider/homeassistant/create',
-      user_id: user.id,
+      user_id: userId,
       username: SUPPORT_USERNAME,
       password,
     });
 
     log(`Created user "${SUPPORT_USERNAME}" with admin role ✓`);
 
-    // Copy avatar and create Person entity with profile picture
+    // Copy avatar to /config/www/
     copyAvatar();
+
+    // Create Person entity with profile picture
     try {
       await haClient.sendCommand({
         type: 'person/create',
         name: SUPPORT_NAME,
-        user_id: user.id,
+        user_id: userId,
         picture: AVATAR_HA_URL,
       });
       log('Person entity created with Tinta Support avatar ✓');
