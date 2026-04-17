@@ -1,3 +1,5 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import * as http from 'http';
 import * as https from 'https';
 
@@ -21,21 +23,32 @@ const CLOUDFLARE_TRUSTED_PROXIES = [
   '131.0.72.0/22',
 ];
 
-interface HAConfiguratorOptions {
+const PROXY_FILE_CONTENT = [
+  '# Auto-configured by Tinta Agent — do not edit manually',
+  'http:',
+  '  use_x_forwarded_for: true',
+  '  trusted_proxies:',
+  ...CLOUDFLARE_TRUSTED_PROXIES.map(ip => `    - ${ip}`),
+  '',
+].join('\n');
+
+export interface HAConfiguratorOptions {
   haHost: string;
   haPort: number;
   token: string;
   ssl: boolean;
   externalUrl: string;
+  supervisorProxy?: boolean;
 }
 
-function haRequest(opts: HAConfiguratorOptions, method: string, path: string, body?: object): Promise<any> {
+function haRequest(opts: HAConfiguratorOptions, method: string, apiPath: string, body?: object): Promise<any> {
   return new Promise((resolve, reject) => {
     const payload = body ? JSON.stringify(body) : undefined;
+    const prefix = opts.supervisorProxy ? '/core' : '';
     const options: http.RequestOptions = {
       host: opts.haHost,
       port: opts.haPort,
-      path,
+      path: `${prefix}${apiPath}`,
       method,
       headers: {
         Authorization: `Bearer ${opts.token}`,
@@ -58,62 +71,76 @@ function haRequest(opts: HAConfiguratorOptions, method: string, path: string, bo
   });
 }
 
-async function getCurrentHAConfig(opts: HAConfiguratorOptions): Promise<Record<string, any>> {
+async function setExternalUrl(opts: HAConfiguratorOptions): Promise<void> {
   const res = await haRequest(opts, 'GET', '/api/config');
   if (res.status !== 200) throw new Error(`HA /api/config returned ${res.status}`);
-  return res.body;
-}
+  const currentExternal = res.body?.external_url ?? '';
 
-async function setExternalUrl(opts: HAConfiguratorOptions): Promise<void> {
+  if (currentExternal === opts.externalUrl) {
+    console.log(`[HA Configurator] external_url already set to ${opts.externalUrl} ✓`);
+    return;
+  }
+
   const internalUrl = `http${opts.ssl ? 's' : ''}://${opts.haHost}:${opts.haPort}`;
-  const res = await haRequest(opts, 'POST', '/api/config/core/update', {
+  const upd = await haRequest(opts, 'POST', '/api/config/core/update', {
     external_url: opts.externalUrl,
     internal_url: internalUrl,
   });
-  if (res.status !== 200) throw new Error(`Failed to set external_url: ${res.status} ${JSON.stringify(res.body)}`);
+  if (upd.status !== 200) throw new Error(`Failed to set external_url: ${upd.status}`);
+  console.log(`[HA Configurator] external_url set to ${opts.externalUrl}`);
 }
 
-async function readConfigFile(opts: HAConfiguratorOptions): Promise<string | null> {
-  // Try HA's built-in file API (requires File Editor or Studio Code Server addon)
-  const res = await haRequest(opts, 'GET', '/api/file_editor?file=/config/configuration.yaml');
-  if (res.status === 200 && typeof res.body === 'string') return res.body;
-  // Fallback: try newer Studio Code Server path
-  const res2 = await haRequest(opts, 'GET', '/api/hassio/ingress/a0d7b954_vscode');
-  return null;
+function writeTrustedProxiesFile(configDir: string): boolean {
+  try {
+    const packagesDir = path.join(configDir, 'packages');
+    const proxyFile = path.join(packagesDir, 'tinta_http.yaml');
+
+    let existing = '';
+    try { existing = fs.readFileSync(proxyFile, 'utf8'); } catch { /* doesn't exist */ }
+
+    if (existing === PROXY_FILE_CONTENT) return false; // already up to date
+
+    fs.mkdirSync(packagesDir, { recursive: true });
+    fs.writeFileSync(proxyFile, PROXY_FILE_CONTENT, 'utf8');
+    console.log(`[HA Configurator] Written trusted_proxies to ${proxyFile}`);
+    return true;
+  } catch (err: any) {
+    console.warn(`[HA Configurator] Could not write trusted_proxies file: ${err.message}`);
+    return false;
+  }
 }
 
-async function writeHttpConfig(opts: HAConfiguratorOptions): Promise<boolean> {
-  // Try to write a package file via HA packages feature
-  const packageContent = [
-    '# Auto-configured by Tinta Agent — do not edit manually',
-    'http:',
-    '  use_x_forwarded_for: true',
-    '  trusted_proxies:',
-    ...CLOUDFLARE_TRUSTED_PROXIES.map(ip => `    - ${ip}`),
-    '',
-  ].join('\n');
+function ensurePackagesInclude(configDir: string): void {
+  const configFile = path.join(configDir, 'configuration.yaml');
+  try {
+    let content = '';
+    try { content = fs.readFileSync(configFile, 'utf8'); } catch { return; }
 
-  // Attempt via HA REST API (requires File Editor addon)
-  const res = await haRequest(opts, 'POST', '/api/file_editor', {
-    file: '/config/packages/tinta_proxy.yaml',
-    content: packageContent,
+    if (content.includes('!include_dir_named packages') || content.includes('!include_dir_merge_named packages')) {
+      return; // already has packages include
+    }
+
+    const packageLine = '\nhomeassistant:\n  packages: !include_dir_named packages\n';
+    fs.appendFileSync(configFile, packageLine, 'utf8');
+    console.log('[HA Configurator] Added packages include to configuration.yaml');
+  } catch (err: any) {
+    console.warn(`[HA Configurator] Could not update configuration.yaml: ${err.message}`);
+  }
+}
+
+async function restartHACore(supervisorToken: string): Promise<void> {
+  return new Promise(resolve => {
+    const req = http.request(
+      { host: 'supervisor', port: 80, path: '/core/restart', method: 'POST',
+        headers: { Authorization: `Bearer ${supervisorToken}`, 'Content-Type': 'application/json' } },
+      res => { res.resume(); res.on('end', resolve); },
+    );
+    req.on('error', e => {
+      console.warn(`[HA Configurator] Could not trigger HA Core restart: ${e.message}`);
+      resolve();
+    });
+    req.end();
   });
-
-  if (res.status === 200 || res.status === 201) return true;
-
-  // Try alternate file editor API format
-  const res2 = await haRequest(opts, 'POST', '/api/hassio/addons/a0d7b954_vscode/api/editor/file', {
-    path: '/config/packages/tinta_proxy.yaml',
-    content: packageContent,
-  });
-
-  return res2.status === 200 || res2.status === 201;
-}
-
-function proxyAlreadyConfigured(haConfig: Record<string, any>): boolean {
-  // HA /api/config doesn't expose http section directly,
-  // but if external_url matches we assume it was set before
-  return false; // always check — lightweight operation
 }
 
 export async function configureHAForTunnel(opts: HAConfiguratorOptions): Promise<void> {
@@ -125,34 +152,27 @@ export async function configureHAForTunnel(opts: HAConfiguratorOptions): Promise
   }
 
   try {
-    // 1. Read current HA config
-    const haConfig = await getCurrentHAConfig(opts);
-    const currentExternal = haConfig.external_url ?? '';
+    // 1. Set external_url via HA REST API
+    await setExternalUrl(opts);
 
-    // 2. Set external_url if different
-    if (currentExternal !== opts.externalUrl) {
-      await setExternalUrl(opts);
-      log(`external_url set to ${opts.externalUrl}`);
-    } else {
-      log(`external_url already set to ${opts.externalUrl} ✓`);
-    }
+    // 2. Write trusted_proxies directly to /config (addon has config:rw)
+    const configDir = process.env.HA_CONFIG_DIR ?? '/config';
+    const wrote = writeTrustedProxiesFile(configDir);
 
-    // 3. Try to write trusted_proxies package file
-    const written = await writeHttpConfig(opts);
-    if (written) {
-      log('http.trusted_proxies package written to /config/packages/tinta_proxy.yaml ✓');
-      log('NOTE: Add "packages: !include_dir_named packages" to configuration.yaml if not already present');
-    } else {
-      // Can't write — print clear manual instructions
-      log('⚠ Could not auto-write trusted_proxies — add this to configuration.yaml manually:');
-      log('');
-      log('http:');
-      log('  use_x_forwarded_for: true');
-      log('  trusted_proxies:');
-      for (const ip of CLOUDFLARE_TRUSTED_PROXIES) {
-        log(`    - ${ip}`);
+    if (wrote) {
+      // Ensure configuration.yaml has packages include
+      ensurePackagesInclude(configDir);
+
+      // Restart HA Core so trusted_proxies takes effect
+      if (opts.supervisorProxy && opts.token) {
+        log('Restarting HA Core to apply trusted_proxies...');
+        await restartHACore(opts.token);
+        log('HA Core restart triggered ✓');
+      } else {
+        log('⚠ Restart HA Core manually to apply trusted_proxies');
       }
-      log('');
+    } else {
+      log('trusted_proxies already configured ✓');
     }
   } catch (err: any) {
     console.warn(`[HA Configurator] Warning: ${err.message} — skipping auto-configuration`);

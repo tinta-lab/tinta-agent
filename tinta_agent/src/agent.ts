@@ -12,6 +12,12 @@ const AGENT_TOKEN    = process.env.TINTA_AGENT_TOKEN!;
 const EXTERNAL_URL   = process.env.TINTA_EXTERNAL_URL ?? '';
 const AGENT_VERSION  = '2026.4.1';
 
+// When HA_HOST=homeassistant the agent is running as a HA Supervisor addon.
+// In that case all HA traffic must go through the supervisor proxy (supervisor:80).
+const SUPERVISOR_PROXY = process.env.HA_HOST === 'homeassistant';
+const HA_HOST = SUPERVISOR_PROXY ? 'supervisor' : (process.env.HA_HOST ?? 'supervisor');
+const HA_PORT = SUPERVISOR_PROXY ? 80 : parseInt(process.env.HA_PORT ?? '8123', 10);
+
 if (!CLIENT_ID)   { console.error('TINTA_CLIENT_ID is required');   process.exit(1); }
 if (!AGENT_TOKEN) { console.error('TINTA_AGENT_TOKEN is required'); process.exit(1); }
 
@@ -55,13 +61,11 @@ function getUptimeSeconds(): number {
 
 async function getHAVersion(): Promise<string> {
   return new Promise(resolve => {
-    const token  = process.env.SUPERVISOR_TOKEN;
+    const token = process.env.SUPERVISOR_TOKEN;
     if (!token) { resolve('unknown'); return; }
-    const haHost = process.env.HA_HOST ?? 'supervisor';
-    const haPort = parseInt(process.env.HA_PORT ?? '8123', 10);
-    // /api/config works both inside HAOS and standalone Docker
+    const apiPath = SUPERVISOR_PROXY ? '/core/api/config' : '/api/config';
     const req = http.get(
-      { host: haHost, port: haPort, path: '/api/config', headers: { Authorization: `Bearer ${token}` } },
+      { host: HA_HOST, port: HA_PORT, path: apiPath, headers: { Authorization: `Bearer ${token}` } },
       res => {
         let body = '';
         res.on('data', d => (body += d));
@@ -95,10 +99,11 @@ async function main() {
 
   // Connect to HA WebSocket
   haClient = new HAWebSocketClient({
-    host: process.env.HA_HOST ?? 'supervisor',
-    port: parseInt(process.env.HA_PORT ?? '8123', 10),
+    host: HA_HOST,
+    port: HA_PORT,
     token: process.env.SUPERVISOR_TOKEN ?? '',
-    ssl: process.env.HA_SSL === 'true',
+    ssl: !SUPERVISOR_PROXY && process.env.HA_SSL === 'true',
+    supervisorProxy: SUPERVISOR_PROXY,
   });
 
   try {
@@ -110,11 +115,12 @@ async function main() {
 
   // Auto-configure HA for Cloudflare tunnel on every startup
   await configureHAForTunnel({
-    haHost: process.env.HA_HOST ?? 'supervisor',
-    haPort: parseInt(process.env.HA_PORT ?? '8123', 10),
+    haHost: HA_HOST,
+    haPort: HA_PORT,
     token: process.env.SUPERVISOR_TOKEN ?? '',
-    ssl: process.env.HA_SSL === 'true',
+    ssl: !SUPERVISOR_PROXY && process.env.HA_SSL === 'true',
     externalUrl: EXTERNAL_URL,
+    supervisorProxy: SUPERVISOR_PROXY,
   });
 
   // Subscribe to HA state changes
