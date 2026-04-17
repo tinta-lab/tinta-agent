@@ -31,4 +31,4 @@ schema:
   tinta_core_ws: str
   tinta_external_url: str?
 
-image: "ghcr.io/tinta-lab/tinta-agent:{version}"
+image: "ghcr.io/tinta-lab/tinta-agent"
