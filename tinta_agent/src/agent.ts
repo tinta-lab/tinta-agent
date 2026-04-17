@@ -4,11 +4,13 @@ import * as fs from 'fs';
 import { HAWebSocketClient } from './websocket-ha';
 import { TintaCoreSocket } from './websocket-core';
 import { haStateToTintaEntity, buildHACommand } from './entities';
+import { configureHAForTunnel } from './ha-configurator';
 
-const CLIENT_ID   = process.env.TINTA_CLIENT_ID!;
-const CORE_WS     = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
-const AGENT_TOKEN = process.env.TINTA_AGENT_TOKEN!;
-const AGENT_VERSION = '2026.4.1';
+const CLIENT_ID      = process.env.TINTA_CLIENT_ID!;
+const CORE_WS        = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
+const AGENT_TOKEN    = process.env.TINTA_AGENT_TOKEN!;
+const EXTERNAL_URL   = process.env.TINTA_EXTERNAL_URL ?? '';
+const AGENT_VERSION  = '2026.4.1';
 
 if (!CLIENT_ID)   { console.error('TINTA_CLIENT_ID is required');   process.exit(1); }
 if (!AGENT_TOKEN) { console.error('TINTA_AGENT_TOKEN is required'); process.exit(1); }
@@ -105,6 +107,15 @@ async function main() {
   } catch (err: any) {
     log('Failed to connect to HA:', err.message, '— continuing anyway');
   }
+
+  // Auto-configure HA for Cloudflare tunnel on every startup
+  await configureHAForTunnel({
+    haHost: process.env.HA_HOST ?? 'supervisor',
+    haPort: parseInt(process.env.HA_PORT ?? '8123', 10),
+    token: process.env.SUPERVISOR_TOKEN ?? '',
+    ssl: process.env.HA_SSL === 'true',
+    externalUrl: EXTERNAL_URL,
+  });
 
   // Subscribe to HA state changes
   if (haClient.isConnected()) {
