@@ -18,6 +18,7 @@ RUN npm run build
 # Remove devDependencies after build
 RUN npm prune --production
 
+COPY assets /app/assets
 COPY run.sh /
 RUN chmod a+x /run.sh
 

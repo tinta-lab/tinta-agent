@@ -118,6 +118,10 @@ export class HAWebSocketClient {
     this.stateCallbacks.push(cb);
   }
 
+  sendCommand<T = any>(payload: Record<string, any>): Promise<T> {
+    return this.send<T>(payload);
+  }
+
   isConnected() {
     return this.connected;
   }
