@@ -9,6 +9,7 @@ interface HAConfig {
   port: number;
   token: string;
   ssl?: boolean;
+  supervisorProxy?: boolean;
 }
 
 type HAStateCallback = (states: Record<string, any>[]) => void;
@@ -27,8 +28,9 @@ export class HAWebSocketClient {
 
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const proto = this.config.ssl ? 'wss' : 'ws';
-      const url = `${proto}://${this.config.host}:${this.config.port}/api/websocket`;
+      const url = this.config.supervisorProxy
+        ? `ws://${this.config.host}:${this.config.port}/core/websocket`
+        : `${this.config.ssl ? 'wss' : 'ws'}://${this.config.host}:${this.config.port}/api/websocket`;
       this.ws = new WebSocket(url);
 
       this.ws.on('message', (data: Buffer) => {
