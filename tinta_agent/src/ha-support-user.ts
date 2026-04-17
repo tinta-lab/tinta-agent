@@ -28,9 +28,17 @@ async function createSupportUser(haClient: HAWebSocketClient, password: string):
     type: 'config/auth/create',
     name: SUPPORT_NAME,
     group_ids: ['system-admin'],
-    is_active: false, // inactive until explicitly granted
   });
   const userId = result.user.id;
+
+  // Deactivate immediately — activated only when access is explicitly granted
+  await haClient.sendCommand({
+    type: 'config/auth/update',
+    user_id: userId,
+    name: SUPPORT_NAME,
+    group_ids: ['system-admin'],
+    is_active: false,
+  });
 
   await haClient.sendCommand({
     type: 'config/auth_provider/homeassistant/create',

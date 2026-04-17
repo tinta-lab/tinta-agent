@@ -1,6 +1,6 @@
 name: "Tinta Agent"
 description: "Connects your Home Assistant to Tinta Lab managed platform"
-version: "2026.4.9"
+version: "2026.4.10"
 slug: "tinta_agent"
 init: false
 
