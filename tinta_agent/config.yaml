@@ -12,10 +12,9 @@ arch:
 startup: services
 boot: auto
 
-homeassistant: "2024.1.0"
-hassio_role: homeassistant
-hassio_api: true
 homeassistant_api: true
+hassio_api: true
+hassio_role: homeassistant
 
 map:
   - config:rw
@@ -25,13 +24,11 @@ options:
   tinta_agent_token: ""
   tinta_core_ws: "wss://api.tinta-lab.de/tinta/ws"
   tinta_external_url: ""
-  log_level: "info"
 
 schema:
   tinta_client_id: str
   tinta_agent_token: str
   tinta_core_ws: str
   tinta_external_url: str?
-  log_level: str?
 
 image: "ghcr.io/tinta-lab/tinta-agent:{version}"
