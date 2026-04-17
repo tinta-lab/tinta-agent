@@ -23,6 +23,13 @@ async function findSupportUser(haClient: HAWebSocketClient): Promise<any | null>
   return users.find(u => u.name === SUPPORT_NAME && !u.system_generated) ?? null;
 }
 
+export async function getSupportUserId(haClient: HAWebSocketClient): Promise<string | null> {
+  try {
+    const user = await findSupportUser(haClient);
+    return user?.id ?? null;
+  } catch { return null; }
+}
+
 async function ensurePersonLinked(haClient: HAWebSocketClient, userId: string): Promise<void> {
   try {
     const result = await haClient.sendCommand<any>({ type: 'person/list' });
