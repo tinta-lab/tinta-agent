@@ -5,14 +5,14 @@ import { HAWebSocketClient } from './websocket-ha';
 import { TintaCoreSocket } from './websocket-core';
 import { haStateToTintaEntity, buildHACommand } from './entities';
 import { configureHAForTunnel } from './ha-configurator';
-import { ensureSupportUser } from './ha-support-user';
+import { ensureSupportUser, setSupportUserActive } from './ha-support-user';
 
 const CLIENT_ID        = process.env.TINTA_CLIENT_ID!;
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
 const AGENT_TOKEN      = process.env.TINTA_AGENT_TOKEN!;
 const EXTERNAL_URL     = process.env.TINTA_EXTERNAL_URL ?? '';
 const SUPPORT_PASSWORD = process.env.TINTA_SUPPORT_PASSWORD ?? 'TintaLab2026!';
-const AGENT_VERSION    = '2026.4.6';
+const AGENT_VERSION    = '2026.4.7';
 
 // When HA_HOST=homeassistant the agent is running as a HA Supervisor addon.
 // In that case all HA traffic must go through the supervisor proxy (supervisor:80).
@@ -157,6 +157,13 @@ async function main() {
   coreSocket.onApplyTemplate(async template => {
     await applyAutomationToHA(template.automation);
     log(`Applied template: ${template.slug}`);
+  });
+
+  // Support access toggle handler
+  coreSocket.onSupportAccess(async (enabled) => {
+    if (haClient.isConnected()) {
+      await setSupportUserActive(haClient, enabled);
+    }
   });
 
   // Remote diagnostics provider
