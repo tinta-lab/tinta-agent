@@ -7,6 +7,31 @@ const AVATAR_SRC       = '/app/assets/tinta_support.png';
 const AVATAR_WWW       = '/config/www/tinta_support.png';
 const AVATAR_HA_URL    = '/local/tinta_support.png';
 
+export async function setSupportUserActive(
+  haClient: HAWebSocketClient,
+  enabled: boolean,
+): Promise<void> {
+  const log = (m: string) => console.log(`[HA Support User] ${m}`);
+  try {
+    const users = await haClient.sendCommand<any[]>({ type: 'config/auth/list' });
+    const supportUser = users.find(u => u.name === SUPPORT_NAME && !u.system_generated);
+    if (!supportUser) {
+      log(`User "${SUPPORT_NAME}" not found — run ensureSupportUser first`);
+      return;
+    }
+    await haClient.sendCommand({
+      type: 'config/auth/update',
+      user_id: supportUser.id,
+      name: supportUser.name,
+      group_ids: supportUser.group_ids,
+      is_active: enabled,
+    });
+    log(`User "${SUPPORT_NAME}" ${enabled ? 'ACTIVATED ✓' : 'DEACTIVATED ✓'}`);
+  } catch (err: any) {
+    log(`Warning: ${err.message}`);
+  }
+}
+
 function copyAvatar(): void {
   try {
     if (!fs.existsSync(AVATAR_SRC)) return;

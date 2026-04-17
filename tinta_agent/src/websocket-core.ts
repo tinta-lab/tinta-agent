@@ -30,12 +30,14 @@ export interface DiagnosticsReport {
 type CommandHandler = (cmd: TintaCommand) => Promise<void>;
 type TemplateHandler = (template: GoldenTemplate) => Promise<void>;
 type DiagnosticsProvider = () => DiagnosticsReport;
+type SupportAccessHandler = (enabled: boolean) => Promise<void>;
 
 export class TintaCoreSocket {
   private socket!: Socket;
   private commandHandler: CommandHandler | null = null;
   private templateHandler: TemplateHandler | null = null;
   private diagnosticsProvider: DiagnosticsProvider | null = null;
+  private supportAccessHandler: SupportAccessHandler | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
 
   constructor(
@@ -111,6 +113,15 @@ export class TintaCoreSocket {
       }
     });
 
+    // Support access toggle from Tinta Core
+    this.socket.on('set_support_access', async ({ enabled }: { enabled: boolean }) => {
+      log(`Support access: ${enabled ? 'ENABLE' : 'DISABLE'}`);
+      if (this.supportAccessHandler) {
+        try { await this.supportAccessHandler(enabled); }
+        catch (e: any) { log('Support access handler error:', e.message); }
+      }
+    });
+
     // Remote log request: return last N lines of stdout (if available)
     this.socket.on('logs_request', ({ lines = 50 }: { lines?: number }) => {
       log(`Log upload requested (${lines} lines)`);
@@ -125,6 +136,7 @@ export class TintaCoreSocket {
   onCommand(handler: CommandHandler) { this.commandHandler = handler; }
   onApplyTemplate(handler: TemplateHandler) { this.templateHandler = handler; }
   onDiagnostics(provider: DiagnosticsProvider) { this.diagnosticsProvider = provider; }
+  onSupportAccess(handler: SupportAccessHandler) { this.supportAccessHandler = handler; }
 
   sendStateUpdate(entities: Record<string, any>[]) {
     if (this.socket?.connected) {
