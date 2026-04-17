@@ -23,63 +23,44 @@ async function findSupportUser(haClient: HAWebSocketClient): Promise<any | null>
   return users.find(u => u.name === SUPPORT_NAME && !u.system_generated) ?? null;
 }
 
-async function createSupportUser(haClient: HAWebSocketClient, password: string): Promise<void> {
-  const result = await haClient.sendCommand<{ user: { id: string } }>({
-    type: 'config/auth/create',
-    name: SUPPORT_NAME,
-    group_ids: ['system-admin'],
-  });
-  const userId = result.user.id;
-
-  // Deactivate immediately — activated only when access is explicitly granted
-  await haClient.sendCommand({
-    type: 'config/auth/update',
-    user_id: userId,
-    name: SUPPORT_NAME,
-    group_ids: ['system-admin'],
-    is_active: false,
-  });
-
-  await haClient.sendCommand({
-    type: 'config/auth_provider/homeassistant/create',
-    user_id: userId,
-    username: SUPPORT_USERNAME,
-    password,
-  });
-
-  copyAvatar();
-
+async function ensurePersonLinked(haClient: HAWebSocketClient, userId: string): Promise<void> {
   try {
-    await haClient.sendCommand({
-      type: 'person/create',
-      name: SUPPORT_NAME,
-      user_id: userId,
-      picture: AVATAR_HA_URL,
-    });
-    log('Person entity created ✓');
-  } catch (e: any) {
-    log(`Person creation skipped: ${e.message}`);
-  }
+    const result = await haClient.sendCommand<any>({ type: 'person/list' });
+    // HA returns { storage: [...], config: [...] } or just an array
+    const all: any[] = result?.storage ?? result?.persons ?? (Array.isArray(result) ? result : []);
+    const existing = all.find((p: any) => p.name === SUPPORT_NAME);
 
-  log(`Created user "${SUPPORT_USERNAME}" (inactive) ✓`);
+    if (existing) {
+      await haClient.sendCommand({
+        type: 'person/update',
+        person_id: existing.id,
+        name: SUPPORT_NAME,
+        user_id: userId,
+        picture: AVATAR_HA_URL,
+        device_trackers: existing.device_trackers ?? [],
+      });
+      log('Person entity re-linked ✓');
+    } else {
+      await haClient.sendCommand({
+        type: 'person/create',
+        name: SUPPORT_NAME,
+        user_id: userId,
+        picture: AVATAR_HA_URL,
+      });
+      log('Person entity created ✓');
+    }
+  } catch (e: any) {
+    log(`Person entity: ${e.message}`);
+  }
 }
 
-// Called at startup: ensure user exists but stays INACTIVE until access is granted
+// Called at agent startup — just copy avatar; user lifecycle is managed per access cycle
 export async function ensureSupportUser(
   haClient: HAWebSocketClient,
-  password: string,
+  _password: string,
 ): Promise<void> {
-  try {
-    const existing = await findSupportUser(haClient);
-    if (existing) {
-      log(`"${SUPPORT_NAME}" already exists ✓`);
-      // Keep current is_active state — managed by access grants
-      return;
-    }
-    await createSupportUser(haClient, password);
-  } catch (err: any) {
-    log(`Warning: ${err.message}`);
-  }
+  copyAvatar();
+  log('Ready ✓');
 }
 
 // Called when client opens or closes support access
@@ -90,39 +71,38 @@ export async function setSupportUserActive(
 ): Promise<void> {
   try {
     if (enabled && password) {
-      // Activate: ensure user exists with fresh password
-      let user = await findSupportUser(haClient);
-
-      if (!user) {
-        // User was deleted on previous revoke — recreate
-        await createSupportUser(haClient, password);
-        user = await findSupportUser(haClient);
+      // Delete existing user first (clean slate — avoids stale credentials)
+      const existing = await findSupportUser(haClient);
+      if (existing) {
+        await haClient.sendCommand({ type: 'config/auth/delete', user_id: existing.id });
+        log('Old user deleted ✓');
       }
 
-      if (user) {
-        // Activate and rotate password
-        await haClient.sendCommand({
-          type: 'config/auth/update',
-          user_id: user.id,
-          name: user.name,
-          group_ids: user.group_ids,
-          is_active: true,
-        });
-        await haClient.sendCommand({
-          type: 'config/auth_provider/homeassistant/admin_change_password',
-          user_id: user.id,
-          password,
-        });
-        log(`"${SUPPORT_NAME}" ACTIVATED with fresh password ✓`);
-      }
+      // Create fresh user
+      const result = await haClient.sendCommand<{ user: { id: string } }>({
+        type: 'config/auth/create',
+        name: SUPPORT_NAME,
+        group_ids: ['system-admin'],
+      });
+      const userId = result.user.id;
+
+      // Link username + access-specific password
+      await haClient.sendCommand({
+        type: 'config/auth_provider/homeassistant/create',
+        user_id: userId,
+        username: SUPPORT_USERNAME,
+        password,
+      });
+
+      // Ensure person entity exists and is linked to new user
+      await ensurePersonLinked(haClient, userId);
+
+      log(`"${SUPPORT_NAME}" ACTIVATED with fresh credentials ✓`);
     } else {
-      // Revoke: DELETE user entirely — immediately invalidates all active sessions
+      // Delete user entirely — immediately invalidates all active sessions
       const user = await findSupportUser(haClient);
       if (user) {
-        await haClient.sendCommand({
-          type: 'config/auth/delete',
-          user_id: user.id,
-        });
+        await haClient.sendCommand({ type: 'config/auth/delete', user_id: user.id });
         log(`"${SUPPORT_NAME}" DELETED — all sessions invalidated ✓`);
       } else {
         log(`"${SUPPORT_NAME}" not found — nothing to revoke`);
