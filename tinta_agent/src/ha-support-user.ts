@@ -10,6 +10,7 @@ const AVATAR_HA_URL    = '/local/tinta_support.png';
 export async function setSupportUserActive(
   haClient: HAWebSocketClient,
   enabled: boolean,
+  password?: string,
 ): Promise<void> {
   const log = (m: string) => console.log(`[HA Support User] ${m}`);
   try {
@@ -26,6 +27,19 @@ export async function setSupportUserActive(
       group_ids: supportUser.group_ids,
       is_active: enabled,
     });
+    // Rotate password — set fresh one on enable, scramble on disable
+    if (password) {
+      try {
+        await haClient.sendCommand({
+          type: 'config/auth_provider/homeassistant/admin_change_password',
+          user_id: supportUser.id,
+          password,
+        });
+        log(`Password rotated ✓`);
+      } catch (e: any) {
+        log(`Password rotation warning: ${e.message}`);
+      }
+    }
     log(`User "${SUPPORT_NAME}" ${enabled ? 'ACTIVATED ✓' : 'DEACTIVATED ✓'}`);
   } catch (err: any) {
     log(`Warning: ${err.message}`);
