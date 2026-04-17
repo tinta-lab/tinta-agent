@@ -3,9 +3,14 @@ import * as path from 'path';
 import * as http from 'http';
 import * as https from 'https';
 
-const CLOUDFLARE_TRUSTED_PROXIES = [
+// RFC1918 ranges cover cloudflared running anywhere on the local network.
+// Cloudflare CDN IPs are included for reverse-proxy setups (non-tunnel).
+const TRUSTED_PROXIES = [
   '127.0.0.1',
   '::1',
+  '10.0.0.0/8',
+  '172.16.0.0/12',
+  '192.168.0.0/16',
   '173.245.48.0/20',
   '103.21.244.0/22',
   '103.22.200.0/22',
@@ -22,15 +27,6 @@ const CLOUDFLARE_TRUSTED_PROXIES = [
   '172.64.0.0/13',
   '131.0.72.0/22',
 ];
-
-const PROXY_FILE_CONTENT = [
-  '# Auto-configured by Tinta Agent — do not edit manually',
-  'http:',
-  '  use_x_forwarded_for: true',
-  '  trusted_proxies:',
-  ...CLOUDFLARE_TRUSTED_PROXIES.map(ip => `    - ${ip}`),
-  '',
-].join('\n');
 
 export interface HAConfiguratorOptions {
   haHost: string;
@@ -90,42 +86,67 @@ async function setExternalUrl(opts: HAConfiguratorOptions): Promise<void> {
   console.log(`[HA Configurator] external_url set to ${opts.externalUrl}`);
 }
 
-function writeTrustedProxiesFile(configDir: string): boolean {
+// Returns true if configuration needs a restart (was changed).
+function ensureHttpTrustedProxies(configDir: string): boolean {
+  const log = (m: string) => console.log(`[HA Configurator] ${m}`);
+
+  // Clean up old package file if we created it before (causes duplicate key errors).
+  const pkgFile = path.join(configDir, 'packages', 'tinta_http.yaml');
   try {
-    const packagesDir = path.join(configDir, 'packages');
-    const proxyFile = path.join(packagesDir, 'tinta_http.yaml');
+    if (fs.existsSync(pkgFile)) {
+      fs.unlinkSync(pkgFile);
+      log('Removed stale packages/tinta_http.yaml');
+    }
+  } catch { /* ignore */ }
 
-    let existing = '';
-    try { existing = fs.readFileSync(proxyFile, 'utf8'); } catch { /* doesn't exist */ }
+  const configFile = path.join(configDir, 'configuration.yaml');
+  let content: string;
+  try { content = fs.readFileSync(configFile, 'utf8'); }
+  catch { log('Could not read configuration.yaml — skipping http config'); return false; }
 
-    if (existing === PROXY_FILE_CONTENT) return false; // already up to date
+  const hasHttpSection = /^http:/m.test(content);
+  const hasTrustedProxies = /trusted_proxies:/m.test(content);
+  // If RFC1918 or the Cloudflare ranges are already present, we consider it configured.
+  const hasRfc1918 = content.includes('192.168.0.0/16') || content.includes('10.0.0.0/8');
 
-    fs.mkdirSync(packagesDir, { recursive: true });
-    fs.writeFileSync(proxyFile, PROXY_FILE_CONTENT, 'utf8');
-    console.log(`[HA Configurator] Written trusted_proxies to ${proxyFile}`);
-    return true;
-  } catch (err: any) {
-    console.warn(`[HA Configurator] Could not write trusted_proxies file: ${err.message}`);
+  if (hasHttpSection && hasTrustedProxies && hasRfc1918) {
+    log('http.trusted_proxies already configured ✓');
     return false;
   }
-}
 
-function ensurePackagesInclude(configDir: string): void {
-  const configFile = path.join(configDir, 'configuration.yaml');
-  try {
-    let content = '';
-    try { content = fs.readFileSync(configFile, 'utf8'); } catch { return; }
-
-    if (content.includes('!include_dir_named packages') || content.includes('!include_dir_merge_named packages')) {
-      return; // already has packages include
+  if (hasHttpSection && hasTrustedProxies && !hasRfc1918) {
+    // Patch: add RFC1918 ranges right after 'trusted_proxies:' line.
+    const patched = content.replace(
+      /([ \t]*trusted_proxies:[ \t]*\n)/,
+      `$1    - 10.0.0.0/8\n    - 172.16.0.0/12\n    - 192.168.0.0/16\n`,
+    );
+    if (patched !== content) {
+      fs.writeFileSync(configFile, patched, 'utf8');
+      log('Added RFC1918 ranges to existing trusted_proxies ✓');
+      return true;
     }
-
-    const packageLine = '\nhomeassistant:\n  packages: !include_dir_named packages\n';
-    fs.appendFileSync(configFile, packageLine, 'utf8');
-    console.log('[HA Configurator] Added packages include to configuration.yaml');
-  } catch (err: any) {
-    console.warn(`[HA Configurator] Could not update configuration.yaml: ${err.message}`);
+    return false;
   }
+
+  if (hasHttpSection && !hasTrustedProxies) {
+    log('⚠ http: section exists but has no trusted_proxies — add manually');
+    return false;
+  }
+
+  // No http: section at all — append a complete one.
+  const httpBlock = [
+    '',
+    '# Tinta Agent — Cloudflare Tunnel proxy configuration',
+    'http:',
+    '  use_x_forwarded_for: true',
+    '  trusted_proxies:',
+    ...TRUSTED_PROXIES.map(ip => `    - ${ip}`),
+    '',
+  ].join('\n');
+
+  fs.appendFileSync(configFile, httpBlock, 'utf8');
+  log('Appended http.trusted_proxies to configuration.yaml ✓');
+  return true;
 }
 
 async function restartHACore(supervisorToken: string): Promise<void> {
@@ -152,27 +173,17 @@ export async function configureHAForTunnel(opts: HAConfiguratorOptions): Promise
   }
 
   try {
-    // 1. Set external_url via HA REST API
     await setExternalUrl(opts);
 
-    // 2. Write trusted_proxies directly to /config (addon has config:rw)
     const configDir = process.env.HA_CONFIG_DIR ?? '/config';
-    const wrote = writeTrustedProxiesFile(configDir);
+    const needsRestart = ensureHttpTrustedProxies(configDir);
 
-    if (wrote) {
-      // Ensure configuration.yaml has packages include
-      ensurePackagesInclude(configDir);
-
-      // Restart HA Core so trusted_proxies takes effect
-      if (opts.supervisorProxy && opts.token) {
-        log('Restarting HA Core to apply trusted_proxies...');
-        await restartHACore(opts.token);
-        log('HA Core restart triggered ✓');
-      } else {
-        log('⚠ Restart HA Core manually to apply trusted_proxies');
-      }
-    } else {
-      log('trusted_proxies already configured ✓');
+    if (needsRestart && opts.supervisorProxy && opts.token) {
+      log('Restarting HA Core to apply trusted_proxies...');
+      await restartHACore(opts.token);
+      log('HA Core restart triggered ✓');
+    } else if (needsRestart) {
+      log('⚠ Restart HA Core manually to apply trusted_proxies');
     }
   } catch (err: any) {
     console.warn(`[HA Configurator] Warning: ${err.message} — skipping auto-configuration`);
