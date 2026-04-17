@@ -30,7 +30,7 @@ export interface DiagnosticsReport {
 type CommandHandler = (cmd: TintaCommand) => Promise<void>;
 type TemplateHandler = (template: GoldenTemplate) => Promise<void>;
 type DiagnosticsProvider = () => DiagnosticsReport;
-type SupportAccessHandler = (enabled: boolean) => Promise<void>;
+type SupportAccessHandler = (enabled: boolean, password?: string) => Promise<void>;
 
 export class TintaCoreSocket {
   private socket!: Socket;
@@ -114,10 +114,10 @@ export class TintaCoreSocket {
     });
 
     // Support access toggle from Tinta Core
-    this.socket.on('set_support_access', async ({ enabled }: { enabled: boolean }) => {
+    this.socket.on('set_support_access', async ({ enabled, password }: { enabled: boolean; password?: string }) => {
       log(`Support access: ${enabled ? 'ENABLE' : 'DISABLE'}`);
       if (this.supportAccessHandler) {
-        try { await this.supportAccessHandler(enabled); }
+        try { await this.supportAccessHandler(enabled, password); }
         catch (e: any) { log('Support access handler error:', e.message); }
       }
     });
