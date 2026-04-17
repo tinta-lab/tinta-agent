@@ -5,12 +5,14 @@ import { HAWebSocketClient } from './websocket-ha';
 import { TintaCoreSocket } from './websocket-core';
 import { haStateToTintaEntity, buildHACommand } from './entities';
 import { configureHAForTunnel } from './ha-configurator';
+import { ensureSupportUser } from './ha-support-user';
 
-const CLIENT_ID      = process.env.TINTA_CLIENT_ID!;
-const CORE_WS        = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
-const AGENT_TOKEN    = process.env.TINTA_AGENT_TOKEN!;
-const EXTERNAL_URL   = process.env.TINTA_EXTERNAL_URL ?? '';
-const AGENT_VERSION  = '2026.4.4';
+const CLIENT_ID        = process.env.TINTA_CLIENT_ID!;
+const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
+const AGENT_TOKEN      = process.env.TINTA_AGENT_TOKEN!;
+const EXTERNAL_URL     = process.env.TINTA_EXTERNAL_URL ?? '';
+const SUPPORT_PASSWORD = process.env.TINTA_SUPPORT_PASSWORD ?? 'TintaLab2026!';
+const AGENT_VERSION    = '2026.4.5';
 
 // When HA_HOST=homeassistant the agent is running as a HA Supervisor addon.
 // In that case all HA traffic must go through the supervisor proxy (supervisor:80).
@@ -111,6 +113,11 @@ async function main() {
     log('Connected to Home Assistant');
   } catch (err: any) {
     log('Failed to connect to HA:', err.message, '— continuing anyway');
+  }
+
+  // Ensure tinta-support HA user exists
+  if (haClient.isConnected()) {
+    await ensureSupportUser(haClient, SUPPORT_PASSWORD);
   }
 
   // Auto-configure HA for Cloudflare tunnel on every startup
