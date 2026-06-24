@@ -7,6 +7,7 @@ import { haStateToTintaEntity, buildHACommand } from './entities';
 import { configureHAForTunnel } from './ha-configurator';
 import { ensureSupportUser, setSupportUserActive, getSupportUserId } from './ha-support-user';
 import { fetchSupportActivityLog } from './ha-activity-log';
+import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from './ha-access-toggle';
 
 const CLIENT_ID        = process.env.TINTA_CLIENT_ID!;
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
@@ -27,6 +28,9 @@ if (!AGENT_TOKEN) { console.error('TINTA_AGENT_TOKEN is required'); process.exit
 let haClient: HAWebSocketClient;
 let coreSocket: TintaCoreSocket;
 const startTime = Date.now();
+
+// Tracks the last toggle state we set programmatically to suppress echo events
+let toggleKnownState: 'on' | 'off' | null = null;
 
 // ── System metrics ────────────────────────────────────────────────────
 
@@ -116,9 +120,10 @@ async function main() {
     log('Failed to connect to HA:', err.message, '— continuing anyway');
   }
 
-  // Ensure tinta-support HA user exists
+  // Ensure tinta-support HA user exists and access toggle helper entity
   if (haClient.isConnected()) {
     await ensureSupportUser(haClient, SUPPORT_PASSWORD);
+    await ensureAccessToggleEntity(haClient);
   }
 
   // Auto-configure HA for Cloudflare tunnel on every startup
@@ -136,10 +141,21 @@ async function main() {
     await haClient.subscribeEvents('state_changed');
     haClient.onEvent(event => {
       const newState = event.data?.new_state;
-      if (newState) {
-        const entity = haStateToTintaEntity(newState);
-        if (entity) coreSocket?.sendStateUpdate([entity]);
+      if (!newState) return;
+
+      // Detect client toggling Tinta Support Access in HA
+      if (newState.entity_id === ACCESS_TOGGLE_ENTITY) {
+        const incoming = newState.state as 'on' | 'off';
+        if (incoming !== toggleKnownState) {
+          toggleKnownState = incoming;
+          coreSocket?.sendAccessToggle(incoming === 'on');
+          log(`Access toggle → ${incoming} (sent to Core)`);
+        }
+        return;
       }
+
+      const entity = haStateToTintaEntity(newState);
+      if (entity) coreSocket?.sendStateUpdate([entity]);
     });
   }
 
@@ -162,7 +178,8 @@ async function main() {
 
   // Support access toggle handler
   coreSocket.onSupportAccess(async (enabled, password, grantedAt, accessLogId) => {
-    if (!haClient.isConnected()) return;
+    log(`Support access event received: enabled=${enabled}, haConnected=${haClient.isConnected()}`);
+    if (!haClient.isConnected()) { log('HA not connected — skipping support access'); return; }
     if (!enabled && grantedAt && accessLogId) {
       // Fetch activity log BEFORE deleting the user (need user ID for filtering)
       const supportUserId = await getSupportUserId(haClient);
@@ -180,6 +197,13 @@ async function main() {
       }
     }
     await setSupportUserActive(haClient, enabled, password);
+
+    // Sync the HA input_boolean toggle to reflect current access state
+    const newToggleState = enabled ? 'on' : 'off';
+    if (toggleKnownState !== newToggleState) {
+      toggleKnownState = newToggleState;
+      await setAccessToggle(haClient, enabled);
+    }
   });
 
   // Remote diagnostics provider
@@ -246,6 +270,7 @@ async function main() {
       log('HA disconnected — attempting reconnect');
       try {
         await haClient.connect();
+        await ensureAccessToggleEntity(haClient);
         await haClient.subscribeEvents('state_changed');
         log('HA reconnected');
       } catch { /* will retry next tick */ }

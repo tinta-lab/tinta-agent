@@ -145,6 +145,12 @@ export class TintaCoreSocket {
     }
   }
 
+  sendAccessToggle(enabled: boolean) {
+    if (this.socket?.connected) {
+      this.socket.emit('access_toggle', { enabled });
+    }
+  }
+
   sendStateUpdate(entities: Record<string, any>[]) {
     if (this.socket?.connected) {
       this.socket.emit('state_update', { clientId: this.clientId, entities });
