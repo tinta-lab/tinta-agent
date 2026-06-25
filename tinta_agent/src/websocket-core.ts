@@ -68,6 +68,7 @@ export class TintaCoreSocket {
         haVersion: this.haVersion,
       });
       this.startHeartbeat();
+      if (this.connectHandler) this.connectHandler();
     });
 
     this.socket.on('disconnect', (reason: string) => {
@@ -137,6 +138,9 @@ export class TintaCoreSocket {
   onCommand(handler: CommandHandler) { this.commandHandler = handler; }
   onApplyTemplate(handler: TemplateHandler) { this.templateHandler = handler; }
   onDiagnostics(provider: DiagnosticsProvider) { this.diagnosticsProvider = provider; }
+  private connectHandler?: () => void;
+  onConnected(handler: () => void) { this.connectHandler = handler; }
+
   onSupportAccess(handler: SupportAccessHandler) { this.supportAccessHandler = handler; }
 
   sendActivityLog(accessLogId: string, entries: string[]) {
