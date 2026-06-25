@@ -161,8 +161,9 @@ async function main() {
   // Connect to Tinta Core
   coreSocket = new TintaCoreSocket(CORE_WS, CLIENT_ID, AGENT_TOKEN, AGENT_VERSION, haVersion);
 
-  // Sync current toggle state on startup
-  if (haClient.isConnected()) {
+  // Sync toggle state after Core connection is established
+  coreSocket.onConnected(async () => {
+    if (!haClient.isConnected()) return;
     try {
       const states = await haClient.getStates();
       const toggle = states.find((s: any) => s.entity_id === ACCESS_TOGGLE_ENTITY);
@@ -171,15 +172,15 @@ async function main() {
         toggleKnownState = state;
         if (state === 'on') {
           coreSocket.sendAccessToggle(true);
-          log(`Startup toggle sync: ON → sent to Core`);
+          log(`Toggle sync: ON → sent to Core`);
         } else {
-          log(`Startup toggle sync: OFF`);
+          log(`Toggle sync: OFF`);
         }
       }
     } catch (e: any) {
       log(`Toggle sync failed: ${e.message}`);
     }
-  }
+  });
 
   // Remote command handler
   coreSocket.onCommand(async cmd => {
