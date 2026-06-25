@@ -13,7 +13,6 @@ const CLIENT_ID        = process.env.TINTA_CLIENT_ID!;
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
 const AGENT_TOKEN      = process.env.TINTA_AGENT_TOKEN!;
 const EXTERNAL_URL     = process.env.TINTA_EXTERNAL_URL ?? '';
-const SUPPORT_PASSWORD = process.env.TINTA_SUPPORT_PASSWORD ?? 'TintaLab2026!';
 const AGENT_VERSION    = '2026.4.12';
 
 // When HA_HOST=homeassistant the agent is running as a HA Supervisor addon.
@@ -122,7 +121,7 @@ async function main() {
 
   // Ensure tinta-support HA user exists and access toggle helper entity
   if (haClient.isConnected()) {
-    await ensureSupportUser(haClient, SUPPORT_PASSWORD);
+    await ensureSupportUser(haClient);
     await ensureAccessToggleEntity(haClient);
   }
 

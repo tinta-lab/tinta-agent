@@ -24,13 +24,11 @@ options:
   tinta_agent_token: ""
   tinta_core_ws: "wss://api.tinta-lab.de/tinta/ws"
   tinta_external_url: ""
-  tinta_support_password: "TintaLab2026!"
 
 schema:
   tinta_client_id: str
   tinta_agent_token: str
   tinta_core_ws: str
   tinta_external_url: str?
-  tinta_support_password: str?
 
 image: "ghcr.io/tinta-lab/tinta-agent"
