@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026.4.13
+- Docker image rebuild: включает ha-access-toggle.ts для работы toggle из HA UI
+- Sync toggle state: агент проверяет состояние toggle при старте и отправляет на backend
+
 ## 2026.4.12
 - Activity log: агент отправляет журнал действий поддержки при отзыве доступа
 - HA Access Toggle: клиент может управлять доступом поддержки из HA UI (`input_boolean.tinta_support_access`)
