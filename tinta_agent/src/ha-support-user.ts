@@ -64,7 +64,6 @@ async function ensurePersonLinked(haClient: HAWebSocketClient, userId: string): 
 // Called at agent startup — just copy avatar; user lifecycle is managed per access cycle
 export async function ensureSupportUser(
   haClient: HAWebSocketClient,
-  _password: string,
 ): Promise<void> {
   copyAvatar();
   log('Ready ✓');
