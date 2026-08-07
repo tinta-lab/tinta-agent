@@ -12,6 +12,9 @@ export interface TintaEntity {
   lastChanged: string;
 }
 
+// Local-only by default: raw sensor/binary_sensor domains (motion, doors, windows,
+// temperature, presence) never leave the home — only controllable entities are
+// forwarded to Tinta Core for the remote control dashboard.
 export function haStateToTintaEntity(haState: Record<string, any>): TintaEntity | null {
   const entityId: string = haState.entity_id;
   const domain = entityId.split('.')[0];
@@ -22,8 +25,6 @@ export function haStateToTintaEntity(haState: Record<string, any>): TintaEntity 
     switch: 'switch',
     cover: 'cover',
     alarm_control_panel: 'security',
-    sensor: 'sensor',
-    binary_sensor: 'binary_sensor',
   };
 
   const type = typeMap[domain];
