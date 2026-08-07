@@ -30,7 +30,14 @@ export interface DiagnosticsReport {
 type CommandHandler = (cmd: TintaCommand) => Promise<void>;
 type TemplateHandler = (template: GoldenTemplate) => Promise<void>;
 type DiagnosticsProvider = () => DiagnosticsReport;
-type SupportAccessHandler = (enabled: boolean, password?: string, grantedAt?: string, accessLogId?: string) => Promise<void>;
+type SupportAccessHandler = (
+  enabled: boolean,
+  password?: string,
+  grantedAt?: string,
+  accessLogId?: string,
+  expiresAt?: string,
+) => Promise<void>;
+type SupportConnectedHandler = (accessedByName: string, expiresAt?: string) => Promise<void>;
 
 export class TintaCoreSocket {
   private socket!: Socket;
@@ -38,6 +45,7 @@ export class TintaCoreSocket {
   private templateHandler: TemplateHandler | null = null;
   private diagnosticsProvider: DiagnosticsProvider | null = null;
   private supportAccessHandler: SupportAccessHandler | null = null;
+  private supportConnectedHandler: SupportConnectedHandler | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
 
   constructor(
@@ -115,12 +123,21 @@ export class TintaCoreSocket {
     });
 
     // Support access toggle from Tinta Core
-    this.socket.on('set_support_access', async (payload: { enabled: boolean; password?: string; grantedAt?: string; accessLogId?: string }) => {
-      const { enabled, password, grantedAt, accessLogId } = payload;
+    this.socket.on('set_support_access', async (payload: { enabled: boolean; password?: string; grantedAt?: string; accessLogId?: string; expiresAt?: string }) => {
+      const { enabled, password, grantedAt, accessLogId, expiresAt } = payload;
       log(`Support access: ${enabled ? 'ENABLE' : 'DISABLE'}`);
       if (this.supportAccessHandler) {
-        try { await this.supportAccessHandler(enabled, password, grantedAt, accessLogId); }
+        try { await this.supportAccessHandler(enabled, password, grantedAt, accessLogId, expiresAt); }
         catch (e: any) { log('Support access handler error:', e.message); }
+      }
+    });
+
+    // A specific support employee connected — update the in-HA banner
+    this.socket.on('support_connected', async (payload: { accessedByName: string; expiresAt?: string }) => {
+      log(`Support connected: ${payload.accessedByName}`);
+      if (this.supportConnectedHandler) {
+        try { await this.supportConnectedHandler(payload.accessedByName, payload.expiresAt); }
+        catch (e: any) { log('Support connected handler error:', e.message); }
       }
     });
 
@@ -142,6 +159,7 @@ export class TintaCoreSocket {
   onConnected(handler: () => void) { this.connectHandler = handler; }
 
   onSupportAccess(handler: SupportAccessHandler) { this.supportAccessHandler = handler; }
+  onSupportConnected(handler: SupportConnectedHandler) { this.supportConnectedHandler = handler; }
 
   sendActivityLog(accessLogId: string, entries: string[]) {
     if (this.socket?.connected) {

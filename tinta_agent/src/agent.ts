@@ -8,6 +8,7 @@ import { configureHAForTunnel } from './ha-configurator';
 import { ensureSupportUser, setSupportUserActive, getSupportUserId } from './ha-support-user';
 import { fetchSupportActivityLog } from './ha-activity-log';
 import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from './ha-access-toggle';
+import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-banner';
 
 const CLIENT_ID        = process.env.TINTA_CLIENT_ID!;
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
@@ -197,7 +198,7 @@ async function main() {
   });
 
   // Support access toggle handler
-  coreSocket.onSupportAccess(async (enabled, password, grantedAt, accessLogId) => {
+  coreSocket.onSupportAccess(async (enabled, password, grantedAt, accessLogId, expiresAt) => {
     log(`Support access event received: enabled=${enabled}, haConnected=${haClient.isConnected()}`);
     if (!haClient.isConnected()) { log('HA not connected — skipping support access'); return; }
     if (!enabled && grantedAt && accessLogId) {
@@ -218,12 +219,24 @@ async function main() {
     }
     await setSupportUserActive(haClient, enabled, password);
 
+    if (enabled) {
+      await showAccessOpenBanner(haClient, expiresAt);
+    } else {
+      await dismissBanner(haClient);
+    }
+
     // Sync the HA input_boolean toggle to reflect current access state
     const newToggleState = enabled ? 'on' : 'off';
     if (toggleKnownState !== newToggleState) {
       toggleKnownState = newToggleState;
       await setAccessToggle(haClient, enabled);
     }
+  });
+
+  // A specific support employee connected — name them in the banner
+  coreSocket.onSupportConnected(async (accessedByName, expiresAt) => {
+    if (!haClient.isConnected()) return;
+    await showConnectedBanner(haClient, accessedByName, expiresAt);
   });
 
   // Remote diagnostics provider
