@@ -38,6 +38,7 @@ type SupportAccessHandler = (
   expiresAt?: string,
 ) => Promise<void>;
 type SupportConnectedHandler = (accessedByName: string, expiresAt?: string) => Promise<void>;
+type SelfUpdateHandler = (targetVersion: string) => Promise<void>;
 
 export class TintaCoreSocket {
   private socket!: Socket;
@@ -46,6 +47,7 @@ export class TintaCoreSocket {
   private diagnosticsProvider: DiagnosticsProvider | null = null;
   private supportAccessHandler: SupportAccessHandler | null = null;
   private supportConnectedHandler: SupportConnectedHandler | null = null;
+  private selfUpdateHandler: SelfUpdateHandler | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
 
   constructor(
@@ -141,6 +143,16 @@ export class TintaCoreSocket {
       }
     });
 
+    // Self-update: Core instructs agent to trigger HA Supervisor add-on update
+    this.socket.on('self_update', async (payload: { targetVersion?: string }) => {
+      const version = payload?.targetVersion ?? '';
+      log(`Self-update requested${version ? ` to v${version}` : ''}`);
+      if (this.selfUpdateHandler) {
+        try { await this.selfUpdateHandler(version); }
+        catch (e: any) { log('Self-update handler error:', e.message); }
+      }
+    });
+
     // Remote log request: return last N lines of stdout (if available)
     this.socket.on('logs_request', ({ lines = 50 }: { lines?: number }) => {
       log(`Log upload requested (${lines} lines)`);
@@ -160,6 +172,7 @@ export class TintaCoreSocket {
 
   onSupportAccess(handler: SupportAccessHandler) { this.supportAccessHandler = handler; }
   onSupportConnected(handler: SupportConnectedHandler) { this.supportConnectedHandler = handler; }
+  onSelfUpdate(handler: SelfUpdateHandler) { this.selfUpdateHandler = handler; }
 
   sendActivityLog(accessLogId: string, entries: string[]) {
     if (this.socket?.connected) {

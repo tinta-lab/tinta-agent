@@ -10,11 +10,9 @@ import { fetchSupportActivityLog } from './ha-activity-log';
 import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from './ha-access-toggle';
 import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-banner';
 
-const CLIENT_ID        = process.env.TINTA_CLIENT_ID!;
-const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
-const AGENT_TOKEN      = process.env.TINTA_AGENT_TOKEN!;
-const EXTERNAL_URL     = process.env.TINTA_EXTERNAL_URL ?? '';
 const AGENT_VERSION    = '2026.8.1';
+const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
+const CREDENTIALS_PATH = '/data/tinta_credentials.json';
 
 // When HA_HOST=homeassistant the agent is running as a HA Supervisor addon.
 // In that case all HA traffic must go through the supervisor proxy (supervisor:80).
@@ -22,8 +20,67 @@ const SUPERVISOR_PROXY = process.env.HA_HOST === 'homeassistant';
 const HA_HOST = SUPERVISOR_PROXY ? 'supervisor' : (process.env.HA_HOST ?? 'supervisor');
 const HA_PORT = SUPERVISOR_PROXY ? 80 : parseInt(process.env.HA_PORT ?? '8123', 10);
 
-if (!CLIENT_ID)   { console.error('TINTA_CLIENT_ID is required');   process.exit(1); }
-if (!AGENT_TOKEN) { console.error('TINTA_AGENT_TOKEN is required'); process.exit(1); }
+// ── Enrollment ────────────────────────────────────────────────────────
+
+interface Credentials {
+  clientId: string;
+  agentToken: string;
+  externalUrl: string;
+}
+
+async function loadOrEnroll(): Promise<Credentials> {
+  // 1. Persisted credentials from previous enrollment
+  if (fs.existsSync(CREDENTIALS_PATH)) {
+    try {
+      const saved = JSON.parse(fs.readFileSync(CREDENTIALS_PATH, 'utf8')) as Credentials;
+      if (saved.clientId && saved.agentToken) {
+        console.log('[Tinta Agent] Loaded credentials from storage');
+        return saved;
+      }
+    } catch { /* corrupt file — fall through */ }
+  }
+
+  // 2. One-time install token enrollment
+  const installToken = process.env.TINTA_INSTALL_TOKEN;
+  if (installToken) {
+    const coreBase = CORE_WS.replace('wss://', 'https://').replace('ws://', 'http://').replace('/tinta/ws', '');
+    console.log(`[Tinta Agent] Enrolling via install token...`);
+    const res = await fetch(`${coreBase}/install/${installToken}`);
+    if (!res.ok) { console.error(`Enrollment failed: ${res.status} ${await res.text()}`); process.exit(1); }
+    const cfg = await res.json() as any;
+    const creds: Credentials = { clientId: cfg.clientId, agentToken: cfg.agentToken, externalUrl: cfg.externalUrl ?? '' };
+    try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2)); }
+    catch (e: any) { console.warn('[Tinta Agent] Could not persist credentials:', e.message); }
+    console.log(`[Tinta Agent] Enrolled as client ${creds.clientId}`);
+    return creds;
+  }
+
+  // 3. Legacy env vars
+  const clientId = process.env.TINTA_CLIENT_ID;
+  const agentToken = process.env.TINTA_AGENT_TOKEN;
+  if (!clientId || !agentToken) {
+    console.error('[Tinta Agent] No credentials: set tinta_install_token, or tinta_client_id + tinta_agent_token');
+    process.exit(1);
+  }
+  return { clientId, agentToken, externalUrl: process.env.TINTA_EXTERNAL_URL ?? '' };
+}
+
+// ── Self-update via HA Supervisor ─────────────────────────────────────
+
+async function triggerSelfUpdate(targetVersion: string): Promise<void> {
+  const supervisorToken = process.env.SUPERVISOR_TOKEN;
+  if (!supervisorToken) { console.log('[Tinta Agent] No SUPERVISOR_TOKEN — skipping self-update'); return; }
+  const body = targetVersion ? JSON.stringify({ version: targetVersion }) : '{}';
+  return new Promise(resolve => {
+    const req = http.request(
+      { host: 'supervisor', port: 80, path: '/addons/self/update', method: 'POST',
+        headers: { Authorization: `Bearer ${supervisorToken}`, 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } },
+      res => { console.log(`[Tinta Agent] Supervisor update: HTTP ${res.statusCode}`); resolve(); },
+    );
+    req.on('error', e => { console.warn('[Tinta Agent] Supervisor update error:', e.message); resolve(); });
+    req.end(body);
+  });
+}
 
 let haClient: HAWebSocketClient;
 let coreSocket: TintaCoreSocket;
@@ -121,6 +178,11 @@ async function applyAutomationToHA(automation: Record<string, any>): Promise<voi
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main() {
+  const creds = await loadOrEnroll();
+  const CLIENT_ID   = creds.clientId;
+  const AGENT_TOKEN = creds.agentToken;
+  const EXTERNAL_URL = creds.externalUrl || process.env.TINTA_EXTERNAL_URL || '';
+
   const haVersion = await getHAVersion();
   log(`Starting v${AGENT_VERSION} | HA ${haVersion} | client ${CLIENT_ID}`);
 
@@ -259,6 +321,12 @@ async function main() {
   coreSocket.onSupportConnected(async (accessedByName, expiresAt) => {
     if (!haClient.isConnected()) return;
     await showConnectedBanner(haClient, accessedByName, expiresAt);
+  });
+
+  // Self-update handler — Core instructs agent to trigger HA Supervisor update
+  coreSocket.onSelfUpdate(async (targetVersion: string) => {
+    log(`Self-update → v${targetVersion || 'latest'}`);
+    await triggerSelfUpdate(targetVersion);
   });
 
   // Remote diagnostics provider
