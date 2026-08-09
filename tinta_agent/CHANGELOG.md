@@ -1,8 +1,20 @@
 # Changelog
 
+## 2026.8.1
+- Security: `tinta-support` HA user now created with `system-users` role (was `system-admin`). Support staff can control devices but cannot access HA admin panel, user management or Supervisor.
+- Security: `buildHACommand` now throws on unknown entity types instead of forwarding arbitrary HA service calls.
+- Security: local TTL timer — agent auto-revokes `tinta-support` user when access expires, even if backend is offline.
+
+## 2026.4.15
+- Баннер в HA показывает имя сотрудника поддержки и время истечения доступа
+- Время истечения доступа отображается клиенту в реальном времени
+
+## 2026.4.14
+- Fix: агент больше не пересылает состояния сенсоров/бинарных сенсоров в Tinta Core (только управляемые сущности)
+
 ## 2026.4.13
-- Docker image rebuild: включает ha-access-toggle.ts для работы toggle из HA UI
-- Sync toggle state: агент проверяет состояние toggle при старте и отправляет на backend
+- Fix: синхронизация toggle состояния при подключении к Core (а не до)
+- Docker-образ пересобран
 
 ## 2026.4.12
 - Activity log: агент отправляет журнал действий поддержки при отзыве доступа
