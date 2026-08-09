@@ -88,7 +88,7 @@ export async function setSupportUserActive(
       const result = await haClient.sendCommand<{ user: { id: string } }>({
         type: 'config/auth/create',
         name: SUPPORT_NAME,
-        group_ids: ['system-admin'],
+        group_ids: ['system-users'],
       });
       const userId = result.user.id;
 

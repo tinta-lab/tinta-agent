@@ -32,6 +32,26 @@ const startTime = Date.now();
 // Tracks the last toggle state we set programmatically to suppress echo events
 let toggleKnownState: 'on' | 'off' | null = null;
 
+// Local TTL guard: auto-revokes support access if backend goes offline before expiry
+let supportExpiryTimer: NodeJS.Timeout | null = null;
+
+function clearSupportExpiryTimer() {
+  if (supportExpiryTimer) { clearTimeout(supportExpiryTimer); supportExpiryTimer = null; }
+}
+
+function scheduleSupportExpiry(expiresAt: string) {
+  clearSupportExpiryTimer();
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return;
+  supportExpiryTimer = setTimeout(async () => {
+    log('Support access TTL expired locally — revoking');
+    if (!haClient.isConnected()) return;
+    await setSupportUserActive(haClient, false);
+    await dismissBanner(haClient);
+    if (toggleKnownState !== 'off') { toggleKnownState = 'off'; await setAccessToggle(haClient, false); }
+  }, ms);
+}
+
 // ── System metrics ────────────────────────────────────────────────────
 
 function getCpuPercent(): number {
@@ -220,8 +240,10 @@ async function main() {
     await setSupportUserActive(haClient, enabled, password);
 
     if (enabled) {
+      if (expiresAt) scheduleSupportExpiry(expiresAt);
       await showAccessOpenBanner(haClient, expiresAt);
     } else {
+      clearSupportExpiryTimer();
       await dismissBanner(haClient);
     }
 

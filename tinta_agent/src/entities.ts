@@ -70,6 +70,6 @@ export function buildHACommand(
       return { domain: 'alarm_control_panel', service: action, serviceData: { entity_id: haEntityId, ...data } };
     }
     default:
-      return { domain, service: action, serviceData: { entity_id: haEntityId, ...data } };
+      throw new Error(`Unknown entity type: ${domain}`);
   }
 }
