@@ -41,7 +41,8 @@ function app(subdomain) {
 // Настройки клиента → clients/SUBDOMAIN.env
 module.exports = {
   apps: [
-    app('vigol'),
+    // app('vigol') удалена 2026-08-10 — миграция на HA Add-on, clients/vigol.env отсутствовал,
+    // процесс никогда не поднимался в PM2 (см. аудит инфраструктуры от 2026-08-10)
     // app('mueller'),  ← добавить после: cp clients/.env.example clients/mueller.env
     // app('schmidt'),
   ],
