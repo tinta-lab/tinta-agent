@@ -10,7 +10,7 @@ import { fetchSupportActivityLog } from './ha-activity-log';
 import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from './ha-access-toggle';
 import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-banner';
 
-const AGENT_VERSION    = '2026.8.1';
+const AGENT_VERSION    = '2026.8.2';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
 const CREDENTIALS_PATH = '/data/tinta_credentials.json';
 

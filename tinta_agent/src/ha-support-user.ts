@@ -84,6 +84,21 @@ export async function setSupportUserActive(
         log('Old user deleted ✓');
       }
 
+      // `config/auth/delete` removes the User but does NOT free the
+      // username/password credential in the homeassistant auth provider's own
+      // storage — reproduced live: after deleting the user above, re-creating
+      // the credential still failed with "username_already_exists" because
+      // the old credential record was left orphaned. Free the username
+      // explicitly before recreating it; harmless (and expected to throw,
+      // hence the catch) when no such credential exists yet.
+      try {
+        await haClient.sendCommand({
+          type: 'config/auth_provider/homeassistant/delete',
+          username: SUPPORT_USERNAME,
+        });
+        log('Orphaned credential cleared ✓');
+      } catch { /* no existing credential for this username — nothing to clean up */ }
+
       // Create fresh user
       const result = await haClient.sendCommand<{ user: { id: string } }>({
         type: 'config/auth/create',

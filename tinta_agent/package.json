@@ -1,6 +1,6 @@
 {
   "name": "tinta-agent",
-  "version": "2026.8.1",
+  "version": "2026.8.2",
   "description": "Tinta Lab Home Assistant Agent",
   "main": "dist/agent.js",
   "scripts": {
