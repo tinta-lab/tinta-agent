@@ -15,6 +15,7 @@ describe('setSupportUserActive', () => {
 
     sendCommand
       .mockResolvedValueOnce([])                          // config/auth/list → no existing user
+      .mockRejectedValueOnce(new Error('not found'))      // auth_provider/homeassistant/delete → no orphaned credential
       .mockResolvedValueOnce({ user: { id: 'uid-1' } })  // config/auth/create
       .mockResolvedValueOnce({})                          // auth_provider/homeassistant/create
       .mockResolvedValueOnce({ storage: [] });            // person/list
@@ -27,6 +28,31 @@ describe('setSupportUserActive', () => {
     expect(createCall, 'config/auth/create was never called').toBeDefined();
     expect(createCall![0].group_ids).toEqual(['system-users']);
     expect(createCall![0].group_ids).not.toContain('system-admin');
+  });
+
+  it('frees an orphaned credential before recreating it, even when no user exists', async () => {
+    const { haClient, sendCommand } = makeMockHA();
+
+    sendCommand
+      .mockResolvedValueOnce([])                          // config/auth/list → no existing user
+      .mockResolvedValueOnce({})                          // auth_provider/homeassistant/delete → orphaned credential freed
+      .mockResolvedValueOnce({ user: { id: 'uid-2' } })  // config/auth/create
+      .mockResolvedValueOnce({})                          // auth_provider/homeassistant/create
+      .mockResolvedValueOnce({ storage: [] });            // person/list
+
+    await setSupportUserActive(haClient, true, 'testpassword');
+
+    const deleteCredentialCall = sendCommand.mock.calls.find(
+      call => call[0]?.type === 'config/auth_provider/homeassistant/delete',
+    );
+    expect(deleteCredentialCall, 'auth_provider/homeassistant/delete was never called').toBeDefined();
+    expect(deleteCredentialCall![0].username).toBe('tinta-support');
+
+    // Must happen before the credential is (re)created
+    const deleteIdx = sendCommand.mock.calls.findIndex(c => c[0]?.type === 'config/auth_provider/homeassistant/delete');
+    const createIdx = sendCommand.mock.calls.findIndex(c => c[0]?.type === 'config/auth_provider/homeassistant/create');
+    expect(deleteIdx).toBeGreaterThanOrEqual(0);
+    expect(createIdx).toBeGreaterThan(deleteIdx);
   });
 
   it('deletes support user on disable', async () => {
