@@ -18,15 +18,19 @@ function copyAvatar(): void {
   } catch { /* optional */ }
 }
 
-async function findSupportUser(haClient: HAWebSocketClient): Promise<any | null> {
+// Returns every matching user, not just one — repeated failed grant cycles
+// (e.g. the username_already_exists bug fixed alongside this) each left
+// behind an orphan "Tinta Support" user with no credential attached, and a
+// single .find() only ever cleaned up the most recent one.
+async function findSupportUsers(haClient: HAWebSocketClient): Promise<any[]> {
   const users = await haClient.sendCommand<any[]>({ type: 'config/auth/list' });
-  return users.find(u => u.name === SUPPORT_NAME && !u.system_generated) ?? null;
+  return users.filter(u => u.name === SUPPORT_NAME && !u.system_generated);
 }
 
 export async function getSupportUserId(haClient: HAWebSocketClient): Promise<string | null> {
   try {
-    const user = await findSupportUser(haClient);
-    return user?.id ?? null;
+    const users = await findSupportUsers(haClient);
+    return users[0]?.id ?? null;
   } catch { return null; }
 }
 
@@ -77,12 +81,13 @@ export async function setSupportUserActive(
 ): Promise<void> {
   try {
     if (enabled && password) {
-      // Delete existing user first (clean slate — avoids stale credentials)
-      const existing = await findSupportUser(haClient);
-      if (existing) {
-        await haClient.sendCommand({ type: 'config/auth/delete', user_id: existing.id });
-        log('Old user deleted ✓');
+      // Delete existing user(s) first (clean slate — avoids stale credentials
+      // and any duplicates left over from earlier failed cycles)
+      const existing = await findSupportUsers(haClient);
+      for (const u of existing) {
+        await haClient.sendCommand({ type: 'config/auth/delete', user_id: u.id });
       }
+      if (existing.length) log(`Old user(s) deleted (${existing.length}) ✓`);
 
       // `config/auth/delete` removes the User but does NOT free the
       // username/password credential in the homeassistant auth provider's own
@@ -99,11 +104,15 @@ export async function setSupportUserActive(
         log('Orphaned credential cleared ✓');
       } catch { /* no existing credential for this username — nothing to clean up */ }
 
-      // Create fresh user
+      // Create fresh user. Deliberately system-admin, not system-users: support
+      // needs to actually fix things (edit automations/integrations, restart
+      // add-ons), not just view dashboards. Tradeoff accepted by the client
+      // owner — the account is short-lived (deleted on revoke/TTL expiry) and
+      // every session is logged in AccessLog with a fresh password each time.
       const result = await haClient.sendCommand<{ user: { id: string } }>({
         type: 'config/auth/create',
         name: SUPPORT_NAME,
-        group_ids: ['system-users'],
+        group_ids: ['system-admin'],
       });
       const userId = result.user.id;
 
@@ -120,11 +129,13 @@ export async function setSupportUserActive(
 
       log(`"${SUPPORT_NAME}" ACTIVATED with fresh credentials ✓`);
     } else {
-      // Delete user entirely — immediately invalidates all active sessions
-      const user = await findSupportUser(haClient);
-      if (user) {
-        await haClient.sendCommand({ type: 'config/auth/delete', user_id: user.id });
-        log(`"${SUPPORT_NAME}" DELETED — all sessions invalidated ✓`);
+      // Delete user(s) entirely — immediately invalidates all active sessions
+      const users = await findSupportUsers(haClient);
+      if (users.length) {
+        for (const u of users) {
+          await haClient.sendCommand({ type: 'config/auth/delete', user_id: u.id });
+        }
+        log(`"${SUPPORT_NAME}" DELETED (${users.length}) — all sessions invalidated ✓`);
       } else {
         log(`"${SUPPORT_NAME}" not found — nothing to revoke`);
       }
