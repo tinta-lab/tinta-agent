@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026.8.3
+- Security: `tinta-support` HA user reverted to `system-admin` (from the `system-users` change in 2026.8.1). Home Assistant enforces `require_admin` at the backend for editing automations/integrations, restarting HA, and Supervisor/add-on operations — `system-users` blocked support staff from actually fixing anything, not just from a UI panel. Client owner accepted the tradeoff; the account remains short-lived (deleted on revoke/TTL expiry) with a fresh password every grant, and every session is logged in AccessLog.
+- Fix: clean up every duplicate orphaned `tinta-support` user left behind by failed grant cycles, not just the most recent one.
+
 ## 2026.8.1
 - Security: `tinta-support` HA user now created with `system-users` role (was `system-admin`). Support staff can control devices but cannot access HA admin panel, user management or Supervisor.
 - Security: `buildHACommand` now throws on unknown entity types instead of forwarding arbitrary HA service calls.

@@ -124,7 +124,7 @@ curl http://localhost:3100/
 
 - Agent token is a per-client signed JWT issued by Tinta Core
 - All communication uses WSS (TLS 1.3) over Cloudflare tunnels — no open inbound ports
-- `tinta-support` HA user is created with `system-users` role (not admin) — technicians can control devices but cannot access HA admin panel or Supervisor
+- `tinta-support` HA user is created with `system-admin` role — Home Assistant enforces admin-only access (`require_admin`) at the backend for editing automations/integrations, restarting HA, and Supervisor/add-on operations, so support staff need it to actually fix client issues, not just view dashboards. The agent itself never needs this — it authenticates as itself via `SUPERVISOR_TOKEN`, never as `tinta-support`. The account is short-lived (created on grant, deleted on revoke or TTL expiry) with a fresh password every session, and every session is logged in AccessLog
 - Support access auto-expires client-side via local TTL timer, even if backend goes offline
 - Container images scanned with [Trivy](https://trivy.dev) on every build — results in the Security tab
 
@@ -148,6 +148,10 @@ Tinta Agent does **not** transmit:
 ## Changelog
 
 See [CHANGELOG.md](tinta_agent/CHANGELOG.md) for the full history.
+
+### 2026.8.3 — Security correction
+- `tinta-support` HA user reverted to `system-admin` (from the `system-users` change below) — HA enforces `require_admin` at the backend for editing automations/integrations and restarting HA/Supervisor, so `system-users` blocked support staff from actually fixing anything
+- Fix: clean up every duplicate orphaned `tinta-support` user, not just the most recent
 
 ### 2026.8.1 — Security hardening
 - `tinta-support` HA user now created with `system-users` role (was `system-admin`)
