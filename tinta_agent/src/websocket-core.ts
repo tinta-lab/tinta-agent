@@ -39,6 +39,7 @@ type SupportAccessHandler = (
 ) => Promise<void>;
 type SupportConnectedHandler = (accessedByName: string, expiresAt?: string) => Promise<void>;
 type SelfUpdateHandler = (targetVersion: string) => Promise<void>;
+type RegisteredHandler = (tunnelToken: string | null) => void;
 
 export class TintaCoreSocket {
   private socket!: Socket;
@@ -48,6 +49,7 @@ export class TintaCoreSocket {
   private supportAccessHandler: SupportAccessHandler | null = null;
   private supportConnectedHandler: SupportConnectedHandler | null = null;
   private selfUpdateHandler: SelfUpdateHandler | null = null;
+  private registeredHandler: RegisteredHandler | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
 
   constructor(
@@ -71,12 +73,20 @@ export class TintaCoreSocket {
 
     this.socket.on('connect', () => {
       log('Connected');
-      this.socket.emit('register', {
-        clientId: this.clientId,
-        jwt: this.agentToken,
-        agentVersion: this.agentVersion,
-        haVersion: this.haVersion,
-      });
+      this.socket.emit(
+        'register',
+        {
+          clientId: this.clientId,
+          jwt: this.agentToken,
+          agentVersion: this.agentVersion,
+          haVersion: this.haVersion,
+        },
+        (ack: { success: boolean; tunnelToken?: string | null } | undefined) => {
+          if (ack?.success && this.registeredHandler) {
+            this.registeredHandler(ack.tunnelToken ?? null);
+          }
+        },
+      );
       this.startHeartbeat();
       if (this.connectHandler) this.connectHandler();
     });
@@ -173,10 +183,17 @@ export class TintaCoreSocket {
   onSupportAccess(handler: SupportAccessHandler) { this.supportAccessHandler = handler; }
   onSupportConnected(handler: SupportConnectedHandler) { this.supportConnectedHandler = handler; }
   onSelfUpdate(handler: SelfUpdateHandler) { this.selfUpdateHandler = handler; }
+  onRegistered(handler: RegisteredHandler) { this.registeredHandler = handler; }
 
   sendActivityLog(accessLogId: string, entries: string[]) {
     if (this.socket?.connected) {
       this.socket.emit('activity_log', { clientId: this.clientId, accessLogId, entries });
+    }
+  }
+
+  sendSecurityAlert(accessLogId: string, anomalies: Record<string, unknown>[]) {
+    if (this.socket?.connected) {
+      this.socket.emit('security_alert', { clientId: this.clientId, accessLogId, anomalies });
     }
   }
 

@@ -7,8 +7,10 @@ import { haStateToTintaEntity, buildHACommand } from './entities';
 import { configureHAForTunnel } from './ha-configurator';
 import { ensureSupportUser, setSupportUserActive, getSupportUserId } from './ha-support-user';
 import { fetchSupportActivityLog } from './ha-activity-log';
+import { snapshotAuthState, diffAuthState, remediateAuthAnomalies, AuthSnapshot } from './ha-security-audit';
 import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from './ha-access-toggle';
 import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-banner';
+import { ensureTunnelRunning, stopTunnel } from './cloudflared-tunnel';
 
 const AGENT_VERSION    = '2026.8.3';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
@@ -26,6 +28,13 @@ interface Credentials {
   clientId: string;
   agentToken: string;
   externalUrl: string;
+  // Cloudflare Tunnel token for this client's individual tunnel, handed back
+  // by /install/:token (see backend ProvisioningService.getInstallConfig).
+  // The agent runs `cloudflared tunnel run --token <this>` itself — no
+  // separate Cloudflared add-on or manual token paste needed. null for
+  // clients provisioned before this existed, or where Cloudflare isn't
+  // configured on the backend.
+  tunnelToken?: string | null;
 }
 
 async function loadOrEnroll(): Promise<Credentials> {
@@ -48,21 +57,31 @@ async function loadOrEnroll(): Promise<Credentials> {
     const res = await fetch(`${coreBase}/install/${installToken}`);
     if (!res.ok) { console.error(`Enrollment failed: ${res.status} ${await res.text()}`); process.exit(1); }
     const cfg = await res.json() as any;
-    const creds: Credentials = { clientId: cfg.clientId, agentToken: cfg.agentToken, externalUrl: cfg.externalUrl ?? '' };
+    const creds: Credentials = {
+      clientId: cfg.clientId,
+      agentToken: cfg.agentToken,
+      externalUrl: cfg.externalUrl ?? '',
+      tunnelToken: cfg.tunnelToken ?? null,
+    };
     try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2)); }
     catch (e: any) { console.warn('[Tinta Agent] Could not persist credentials:', e.message); }
     console.log(`[Tinta Agent] Enrolled as client ${creds.clientId}`);
     return creds;
   }
 
-  // 3. Legacy env vars
+  // 3. Legacy env vars (standalone/PM2 deployments — no HA add-on options UI)
   const clientId = process.env.TINTA_CLIENT_ID;
   const agentToken = process.env.TINTA_AGENT_TOKEN;
   if (!clientId || !agentToken) {
     console.error('[Tinta Agent] No credentials: set tinta_install_token, or tinta_client_id + tinta_agent_token');
     process.exit(1);
   }
-  return { clientId, agentToken, externalUrl: process.env.TINTA_EXTERNAL_URL ?? '' };
+  return {
+    clientId,
+    agentToken,
+    externalUrl: process.env.TINTA_EXTERNAL_URL ?? '',
+    tunnelToken: process.env.TINTA_TUNNEL_TOKEN ?? null,
+  };
 }
 
 // ── Self-update via HA Supervisor ─────────────────────────────────────
@@ -91,6 +110,11 @@ let toggleKnownState: 'on' | 'off' | null = null;
 
 // Local TTL guard: auto-revokes support access if backend goes offline before expiry
 let supportExpiryTimer: NodeJS.Timeout | null = null;
+
+// accessLogId → auth state snapshotted right after the support user was
+// created, so revoke can diff against it and catch anything else that
+// changed while a system-admin support session was active.
+const authBaselines = new Map<string, AuthSnapshot>();
 
 function clearSupportExpiryTimer() {
   if (supportExpiryTimer) { clearTimeout(supportExpiryTimer); supportExpiryTimer = null; }
@@ -186,6 +210,12 @@ async function main() {
   const haVersion = await getHAVersion();
   log(`Starting v${AGENT_VERSION} | HA ${haVersion} | client ${CLIENT_ID}`);
 
+  // Start the managed Cloudflare Tunnel immediately using whatever token we
+  // already have persisted (covers cold start before Core is reachable).
+  // Re-confirmed/updated below on every successful `register` ack, which is
+  // what actually picks it up for agents enrolled before this existed.
+  ensureTunnelRunning(creds.tunnelToken);
+
   // Connect to HA WebSocket
   haClient = new HAWebSocketClient({
     host: HA_HOST,
@@ -244,6 +274,19 @@ async function main() {
   // Connect to Tinta Core
   coreSocket = new TintaCoreSocket(CORE_WS, CLIENT_ID, AGENT_TOKEN, AGENT_VERSION, haVersion);
 
+  // Core hands back the current tunnel token on every successful register —
+  // this is what makes the tunnel self-heal for agents enrolled before it
+  // was auto-managed, and picks up a recreated tunnel automatically without
+  // needing a fresh install link.
+  coreSocket.onRegistered((tunnelToken) => {
+    ensureTunnelRunning(tunnelToken);
+    if (tunnelToken && tunnelToken !== creds.tunnelToken) {
+      creds.tunnelToken = tunnelToken;
+      try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2)); }
+      catch (e: any) { log(`Could not persist updated tunnel token: ${e.message}`); }
+    }
+  });
+
   // Sync toggle state after Core connection is established
   coreSocket.onConnected(async () => {
     if (!haClient.isConnected()) return;
@@ -298,12 +341,46 @@ async function main() {
         coreSocket.sendActivityLog(accessLogId, entries);
         log(`Activity log: ${entries.length} entries sent`);
       }
+
+      // Security audit — diff HA's auth state against the baseline taken
+      // when this session started, BEFORE the support user (and thus our
+      // only record of who was acting) is deleted below. Catches admin
+      // backdoors (new users, new logins) that would otherwise silently
+      // outlive the revoke.
+      const baseline = authBaselines.get(accessLogId);
+      if (baseline) {
+        try {
+          const after = await snapshotAuthState(haClient);
+          const anomalies = diffAuthState(baseline, after);
+          if (anomalies.length) {
+            log(`⚠ ${anomalies.length} auth anomaly(ies) detected — remediating & alerting Core`);
+            await remediateAuthAnomalies(haClient, anomalies);
+            coreSocket.sendSecurityAlert(accessLogId, anomalies);
+          } else {
+            log('Security audit: no anomalies');
+          }
+        } catch (e: any) {
+          log(`Security audit failed: ${e.message}`);
+        } finally {
+          authBaselines.delete(accessLogId);
+        }
+      }
     }
+
     await setSupportUserActive(haClient, enabled, password);
 
     if (enabled) {
       if (expiresAt) scheduleSupportExpiry(expiresAt);
       await showAccessOpenBanner(haClient, expiresAt);
+      // Baseline for the security audit above — taken AFTER setSupportUserActive
+      // so the freshly-created tinta-support user itself isn't flagged as an anomaly.
+      if (accessLogId) {
+        try {
+          authBaselines.set(accessLogId, await snapshotAuthState(haClient));
+        } catch (e: any) {
+          log(`Could not snapshot baseline auth state: ${e.message}`);
+        }
+      }
     } else {
       clearSupportExpiryTimer();
       await dismissBanner(haClient);
@@ -412,6 +489,7 @@ main().catch(err => {
 
 process.on('SIGTERM', () => {
   log('Shutting down...');
+  stopTunnel();
   haClient?.disconnect();
   coreSocket?.disconnect();
   process.exit(0);
