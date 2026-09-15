@@ -21,16 +21,22 @@ map:
 
 options:
   tinta_install_token: ""
-  tinta_client_id: ""
-  tinta_agent_token: ""
-  tinta_core_ws: "wss://api.tinta-lab.de/tinta/ws"
   tinta_external_url: ""
+  tinta_core_ws: "wss://api.tinta-lab.de/tinta/ws"
 
 schema:
+  # The only two fields an installer ever actually fills in. client_id and
+  # agent_token used to be here too, but they're self-filled by the agent on
+  # first enroll via tinta_install_token and persisted to /data — exposing
+  # them as blank required-looking fields just confused installers into
+  # wondering whether they had to fill them (they never do). Leave them
+  # blank/untouched here on purpose.
   tinta_install_token: str?
-  tinta_client_id: str?
-  tinta_agent_token: str?
-  tinta_core_ws: str
   tinta_external_url: str?
+  # Has a working default; only ever changes if Tinta Core's own address
+  # changes, which is an infra change, not a per-client one. Kept editable
+  # (not removed) as an escape hatch, but shown as advanced by HA's add-on UI
+  # since options with a non-empty default are grouped there automatically.
+  tinta_core_ws: str?
 
 image: "ghcr.io/tinta-lab/tinta-agent"
