@@ -11,6 +11,7 @@ import { snapshotAuthState, diffAuthState, remediateAuthAnomalies, AuthSnapshot 
 import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from './ha-access-toggle';
 import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-banner';
 import { ensureTunnelRunning, stopTunnel } from './cloudflared-tunnel';
+import { createSupportExpiryTimer } from './support-expiry-timer';
 
 const AGENT_VERSION    = '2026.8.3';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
@@ -108,30 +109,14 @@ const startTime = Date.now();
 // Tracks the last toggle state we set programmatically to suppress echo events
 let toggleKnownState: 'on' | 'off' | null = null;
 
-// Local TTL guard: auto-revokes support access if backend goes offline before expiry
-let supportExpiryTimer: NodeJS.Timeout | null = null;
-
 // accessLogId → auth state snapshotted right after the support user was
 // created, so revoke can diff against it and catch anything else that
 // changed while a system-admin support session was active.
 const authBaselines = new Map<string, AuthSnapshot>();
 
-function clearSupportExpiryTimer() {
-  if (supportExpiryTimer) { clearTimeout(supportExpiryTimer); supportExpiryTimer = null; }
-}
-
-function scheduleSupportExpiry(expiresAt: string) {
-  clearSupportExpiryTimer();
-  const ms = new Date(expiresAt).getTime() - Date.now();
-  if (ms <= 0) return;
-  supportExpiryTimer = setTimeout(async () => {
-    log('Support access TTL expired locally — revoking');
-    if (!haClient.isConnected()) return;
-    await setSupportUserActive(haClient, false);
-    await dismissBanner(haClient);
-    if (toggleKnownState !== 'off') { toggleKnownState = 'off'; await setAccessToggle(haClient, false); }
-  }, ms);
-}
+// Local TTL guard: auto-revokes support access if backend goes offline before
+// expiry. Constructed in main() once haClient exists — see createSupportExpiryTimer.
+let supportExpiry: ReturnType<typeof createSupportExpiryTimer>;
 
 // ── System metrics ────────────────────────────────────────────────────
 
@@ -223,6 +208,13 @@ async function main() {
     token: process.env.SUPERVISOR_TOKEN ?? '',
     ssl: !SUPERVISOR_PROXY && process.env.HA_SSL === 'true',
     supervisorProxy: SUPERVISOR_PROXY,
+  });
+
+  supportExpiry = createSupportExpiryTimer({
+    haClient,
+    getToggleKnownState: () => toggleKnownState,
+    setToggleKnownState: (state) => { toggleKnownState = state; },
+    log,
   });
 
   try {
@@ -370,7 +362,7 @@ async function main() {
     await setSupportUserActive(haClient, enabled, password);
 
     if (enabled) {
-      if (expiresAt) scheduleSupportExpiry(expiresAt);
+      if (expiresAt) supportExpiry.schedule(expiresAt);
       await showAccessOpenBanner(haClient, expiresAt);
       // Baseline for the security audit above — taken AFTER setSupportUserActive
       // so the freshly-created tinta-support user itself isn't flagged as an anomaly.
@@ -382,7 +374,7 @@ async function main() {
         }
       }
     } else {
-      clearSupportExpiryTimer();
+      supportExpiry.clear();
       await dismissBanner(haClient);
     }
 
