@@ -149,6 +149,12 @@ Tinta Agent does **not** transmit:
 
 See [CHANGELOG.md](tinta_agent/CHANGELOG.md) for the full history.
 
+### 2026.9.1 — Self-managed tunnel, post-support audit, critical arch fix
+- Agent now runs its own Cloudflare Tunnel using the token Tinta Core hands back on enroll/register — no separate Cloudflared add-on or manual token paste
+- Post-support HA security audit: snapshots auth state before/after every support session, auto-removes any new admin user found, reports findings to Core
+- `cloudflared` pinned to an exact release + per-architecture SHA-256 instead of `latest`
+- **Fix (critical): every multi-arch build since at least 2026.8.1 published amd64 content mislabeled as `linux/arm64`/`linux/arm/v7`** — any non-amd64 install could never have started. Each architecture now builds from its own explicitly platform-pinned base image.
+
 ### 2026.8.3 — Security correction
 - `tinta-support` HA user reverted to `system-admin` (from the `system-users` change below) — HA enforces `require_admin` at the backend for editing automations/integrations and restarting HA/Supervisor, so `system-users` blocked support staff from actually fixing anything
 - Fix: clean up every duplicate orphaned `tinta-support` user, not just the most recent

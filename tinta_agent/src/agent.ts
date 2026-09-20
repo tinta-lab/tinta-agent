@@ -13,7 +13,7 @@ import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-b
 import { ensureTunnelRunning, stopTunnel } from './cloudflared-tunnel';
 import { createSupportExpiryTimer } from './support-expiry-timer';
 
-const AGENT_VERSION    = '2026.8.3';
+const AGENT_VERSION    = '2026.9.1';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
 const CREDENTIALS_PATH = '/data/tinta_credentials.json';
 
