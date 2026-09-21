@@ -149,10 +149,9 @@ Tinta Agent does **not** transmit:
 
 See [CHANGELOG.md](tinta_agent/CHANGELOG.md) for the full history.
 
-### 2026.9.2 — Enrollment no longer crash-loops on expected states
-- **Fix (critical): the agent no longer exits during install-token enrollment on an expected 403 "consent not yet given"** — this used to crash the process, and HA Supervisor's near-immediate restart-on-crash turned it into a tight restart loop that could burn through the backend's enrollment rate limit
-- Enrollment now retries with capped exponential backoff (max 120s, keeping the sustained rate safely under the backend's throttle) on 403/429/5xx/network errors; only 404/410 (token genuinely dead) exit immediately
-- Enrollment logic extracted to `src/enrollment.ts` for unit testing (`agent.ts` itself exports nothing)
+### 2026.9.2 — Enrollment reliability fix
+- Fixed enrollment restart loops caused by expected HTTP 403 responses.
+- Improved retry handling for transient enrollment errors.
 
 ### 2026.9.1 — Self-managed tunnel, post-support audit, critical arch fix
 - Agent now runs its own Cloudflare Tunnel using the token Tinta Core hands back on enroll/register — no separate Cloudflared add-on or manual token paste
