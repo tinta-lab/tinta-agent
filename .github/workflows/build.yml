@@ -44,8 +44,16 @@ jobs:
             else
               CHANNEL="stable"
             fi
-            # major.minor alias: 2026.4.1 → 2026.4
-            MINOR_ALIAS="${VERSION%.*}"
+            # major.minor alias: 2026.4.1 → 2026.4 — stable only. A beta tag
+            # (2026.4.1-beta) strips to the exact same "2026.4" via %.* as a
+            # real stable 2026.4.1 would, so without this gate an RC build
+            # silently overwrote the alias real installs could be pinned to
+            # with unverified content (found during the 2026.9.2 RC).
+            if [[ $CHANNEL == "stable" ]]; then
+              MINOR_ALIAS="${VERSION%.*}"
+            else
+              MINOR_ALIAS=""
+            fi
           else
             VERSION="dev"
             CHANNEL="dev"
