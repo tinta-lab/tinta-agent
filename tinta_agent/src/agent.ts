@@ -12,6 +12,7 @@ import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from 
 import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-banner';
 import { ensureTunnelRunning, stopTunnel } from './cloudflared-tunnel';
 import { createSupportExpiryTimer } from './support-expiry-timer';
+import { enrollWithRetry, type Credentials } from './enrollment';
 
 const AGENT_VERSION    = '2026.9.1';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
@@ -24,18 +25,12 @@ const HA_HOST = SUPERVISOR_PROXY ? 'supervisor' : (process.env.HA_HOST ?? 'super
 const HA_PORT = SUPERVISOR_PROXY ? 80 : parseInt(process.env.HA_PORT ?? '8123', 10);
 
 // ── Enrollment ────────────────────────────────────────────────────────
+// Credentials type and the retry/backoff logic live in ./enrollment.ts —
+// extracted for the same reason support-expiry-timer.ts was: agent.ts
+// itself exports nothing, so this couldn't be unit tested in place.
 
-interface Credentials {
-  clientId: string;
-  agentToken: string;
-  externalUrl: string;
-  // Cloudflare Tunnel token for this client's individual tunnel, handed back
-  // by /install/:token (see backend ProvisioningService.getInstallConfig).
-  // The agent runs `cloudflared tunnel run --token <this>` itself — no
-  // separate Cloudflared add-on or manual token paste needed. null for
-  // clients provisioned before this existed, or where Cloudflare isn't
-  // configured on the backend.
-  tunnelToken?: string | null;
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function loadOrEnroll(): Promise<Credentials> {
@@ -54,16 +49,14 @@ async function loadOrEnroll(): Promise<Credentials> {
   const installToken = process.env.TINTA_INSTALL_TOKEN;
   if (installToken) {
     const coreBase = CORE_WS.replace('wss://', 'https://').replace('ws://', 'http://').replace('/tinta/ws', '');
-    console.log(`[Tinta Agent] Enrolling via install token...`);
-    const res = await fetch(`${coreBase}/install/${installToken}`);
-    if (!res.ok) { console.error(`Enrollment failed: ${res.status} ${await res.text()}`); process.exit(1); }
-    const cfg = await res.json() as any;
-    const creds: Credentials = {
-      clientId: cfg.clientId,
-      agentToken: cfg.agentToken,
-      externalUrl: cfg.externalUrl ?? '',
-      tunnelToken: cfg.tunnelToken ?? null,
-    };
+    const creds = await enrollWithRetry(coreBase, installToken, {
+      fetchFn: fetch,
+      sleepFn: sleep,
+      log: (msg) => console.log(msg),
+      warn: (msg) => console.warn(msg),
+      error: (msg) => console.error(msg),
+      exit: (code) => process.exit(code),
+    });
     try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2)); }
     catch (e: any) { console.warn('[Tinta Agent] Could not persist credentials:', e.message); }
     console.log(`[Tinta Agent] Enrolled as client ${creds.clientId}`);
