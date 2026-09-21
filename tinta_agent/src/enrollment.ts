@@ -1,23 +1,22 @@
-// Extracted from agent.ts (2026-09-21) for the same reason
-// support-expiry-timer.ts was: agent.ts itself exports nothing, so this
-// logic could only ever be tested by hand against a real backend.
+// Extracted from agent.ts for the same reason support-expiry-timer.ts was:
+// agent.ts itself exports nothing, so this logic could only ever be tested
+// by hand against a real backend.
 //
-// Real incident this fixes (V&T home / hub-nx5g9c): the previous version of
-// this enrollment call did `if (!res.ok) { log error; process.exit(1); }` —
-// any non-2xx response, including the completely expected "consent not
-// given yet" 403, crashed the process. HA Supervisor then restarted the
-// add-on almost immediately (config.yaml: startup: services, boot: auto),
-// so a client who took even a few minutes to read and accept the § 356 BGB
-// consent screen produced a tight crash-restart loop: each restart burned
-// one more of the 10 requests/15min GET /install/:token has
-// (install.controller.ts's @Throttle), until the rate limiter kicked in and
-// returned 429 — at which point even the BROWSER's own legitimate request
-// (right after the client clicked "Bestätigen und fortfahren") got a 429
-// too, which the frontend displayed as "Ссылка недействительна" (link
-// invalid), even though the token was completely valid and consent had
-// just succeeded. Three real bugs chained together; this module fixes the
-// root one — the agent must never crash-loop on an expected, temporary
-// condition.
+// Regression this fixes: the previous version of this enrollment call did
+// `if (!res.ok) { log error; process.exit(1); }` — any non-2xx response,
+// including the completely expected "consent not given yet" 403, crashed
+// the process. HA Supervisor then restarted the add-on almost immediately
+// (config.yaml: startup: services, boot: auto), so a client who took even
+// a few minutes to read and accept the § 356 BGB consent screen produced a
+// tight crash-restart loop: each restart burned one more of the 10
+// requests/15min GET /install/:token has (install.controller.ts's
+// @Throttle), until the rate limiter kicked in and returned 429 — at which
+// point even the browser's own legitimate request (right after the client
+// completed consent) got a 429 too, which the frontend displayed as an
+// "invalid link" error, even though the token was completely valid and
+// consent had just succeeded. Three real bugs chained together; this
+// module fixes the root one — the agent must never crash-loop on an
+// expected, temporary condition.
 
 export interface Credentials {
   clientId: string;

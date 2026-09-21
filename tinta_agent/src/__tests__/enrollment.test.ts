@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { enrollWithRetry, enrollBackoffMs, type EnrollDeps } from '../enrollment';
 
-// Regression coverage for the V&T home / hub-nx5g9c incident (2026-09-21):
-// the previous implementation crashed the process on the first non-2xx
-// response, including the completely expected "consent not given yet" 403 —
-// HA Supervisor's restart-on-crash then produced a tight loop that burned
+// Regression coverage for enrollment retry behavior: the previous
+// implementation crashed the process on the first non-2xx response,
+// including the completely expected "consent not given yet" 403 — HA
+// Supervisor's restart-on-crash then produced a tight loop that burned
 // through the backend's rate limit and made even the browser's legitimate
 // request fail. These tests exercise the real classification logic
 // directly, not a reimplementation of it.
