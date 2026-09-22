@@ -10,11 +10,13 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "semver": "^7.8.5",
     "socket.io-client": "^4.7.5",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/semver": "^7.8.0",
     "@types/ws": "^8.5.0",
     "typescript": "^5.4.0",
     "vitest": "^2.0.0"
