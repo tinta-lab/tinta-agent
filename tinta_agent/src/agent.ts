@@ -238,7 +238,7 @@ async function main() {
     ssl: !SUPERVISOR_PROXY && process.env.HA_SSL === 'true',
     externalUrl: EXTERNAL_URL,
     supervisorProxy: SUPERVISOR_PROXY,
-  });
+  }, haClient);
 
   // Subscribe to HA state changes
   if (haClient.isConnected()) {
