@@ -13,6 +13,7 @@ import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-b
 import { ensureTunnelRunning, stopTunnel } from './cloudflared-tunnel';
 import { createSupportExpiryTimer } from './support-expiry-timer';
 import { enrollWithRetry, type Credentials } from './enrollment';
+import { isSelfUpdateAllowed } from './self-update-guard';
 
 const AGENT_VERSION    = '2026.9.2';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
@@ -81,6 +82,12 @@ async function loadOrEnroll(): Promise<Credentials> {
 // ── Self-update via HA Supervisor ─────────────────────────────────────
 
 async function triggerSelfUpdate(targetVersion: string): Promise<void> {
+  // Defense-in-depth: refuse a downgrade even if it slipped past the
+  // backend's own guard (tinta-lab backend/src/common/agent-version.ts).
+  if (!isSelfUpdateAllowed(AGENT_VERSION, targetVersion)) {
+    console.warn(`[Tinta Agent] Refusing self-update: target ${targetVersion} is not newer than installed ${AGENT_VERSION}`);
+    return;
+  }
   const supervisorToken = process.env.SUPERVISOR_TOKEN;
   if (!supervisorToken) { console.log('[Tinta Agent] No SUPERVISOR_TOKEN — skipping self-update'); return; }
   const body = targetVersion ? JSON.stringify({ version: targetVersion }) : '{}';
