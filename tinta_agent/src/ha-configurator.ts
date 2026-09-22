@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as http from 'http';
-import * as https from 'https';
+import { HAWebSocketClient } from './websocket-ha';
 
 // RFC1918 ranges cover cloudflared running anywhere on the local network.
 // Cloudflare CDN IPs are included for reverse-proxy setups (non-tunnel).
@@ -37,40 +37,41 @@ export interface HAConfiguratorOptions {
   supervisorProxy?: boolean;
 }
 
-function haRequest(opts: HAConfiguratorOptions, method: string, apiPath: string, body?: object): Promise<any> {
+// HAWebSocketClient.sendCommand() has no timeout of its own, and a
+// disconnect mid-flight never rejects an in-flight command (websocket-ha.ts
+// only flips `connected = false` and schedules a reconnect — it doesn't
+// walk pendingMap). Without this, a WS drop between any two of the three
+// sendCommand() calls below would hang this function — and therefore
+// configureHAForTunnel(), which agent.ts's main() awaits before subscribing
+// to HA events — forever. external_url is a best-effort improvement, not
+// an enrollment precondition, so it must fail fast, not hang the Agent.
+const HA_WS_COMMAND_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
-    const payload = body ? JSON.stringify(body) : undefined;
-    const prefix = opts.supervisorProxy ? '/core' : '';
-    const options: http.RequestOptions = {
-      host: opts.haHost,
-      port: opts.haPort,
-      path: `${prefix}${apiPath}`,
-      method,
-      headers: {
-        Authorization: `Bearer ${opts.token}`,
-        'Content-Type': 'application/json',
-        ...(payload ? { 'Content-Length': Buffer.byteLength(payload) } : {}),
-      },
-    };
-    const client = opts.ssl ? https : http;
-    const req = client.request(options, res => {
-      let data = '';
-      res.on('data', c => (data += c));
-      res.on('end', () => {
-        try { resolve({ status: res.statusCode, body: JSON.parse(data) }); }
-        catch { resolve({ status: res.statusCode, body: data }); }
-      });
-    });
-    req.on('error', reject);
-    if (payload) req.write(payload);
-    req.end();
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); },
+    );
   });
 }
 
-async function setExternalUrl(opts: HAConfiguratorOptions): Promise<void> {
-  const res = await haRequest(opts, 'GET', '/api/config');
-  if (res.status !== 200) throw new Error(`HA /api/config returned ${res.status}`);
-  const currentExternal = res.body?.external_url ?? '';
+// config/core/update (external_url/internal_url) has never existed as a
+// REST route — HA only ever exposed it as a WebSocket command, the one its
+// own frontend "General" settings page uses. The previous implementation
+// called POST /api/config/core/update over plain HTTP and always got a 404,
+// on every HA version, not just a specific one. Both read (get_config) and
+// write (config/core/update) go through the Agent's own already-connected
+// HA WebSocket client instead — no second connection is opened here, and a
+// failed/absent HA WS simply skips this step (see configureHAForTunnel).
+async function setExternalUrl(haClient: HAWebSocketClient, opts: HAConfiguratorOptions): Promise<void> {
+  const config = await withTimeout(
+    haClient.sendCommand<{ external_url?: string }>({ type: 'get_config' }),
+    HA_WS_COMMAND_TIMEOUT_MS,
+    'get_config',
+  );
+  const currentExternal = config?.external_url ?? '';
 
   if (currentExternal === opts.externalUrl) {
     console.log(`[HA Configurator] external_url already set to ${opts.externalUrl} ✓`);
@@ -79,12 +80,30 @@ async function setExternalUrl(opts: HAConfiguratorOptions): Promise<void> {
 
   // In supervisor proxy mode haHost is 'supervisor' — use HA_INTERNAL_URL env or skip internal_url.
   const internalUrl = process.env.HA_INTERNAL_URL ?? (opts.supervisorProxy ? undefined : `http${opts.ssl ? 's' : ''}://${opts.haHost}:${opts.haPort}`);
-  const upd = await haRequest(opts, 'POST', '/api/config/core/update', {
-    external_url: opts.externalUrl,
-    ...(internalUrl ? { internal_url: internalUrl } : {}),
-  });
-  if (upd.status !== 200) throw new Error(`Failed to set external_url: ${upd.status}`);
-  console.log(`[HA Configurator] external_url set to ${opts.externalUrl}`);
+  await withTimeout(
+    haClient.sendCommand({
+      type: 'config/core/update',
+      external_url: opts.externalUrl,
+      ...(internalUrl ? { internal_url: internalUrl } : {}),
+    }),
+    HA_WS_COMMAND_TIMEOUT_MS,
+    'config/core/update',
+  );
+
+  // Trust but verify: config/core/update resolving doesn't by itself prove
+  // HA actually applied it, so re-read the same way applications page would.
+  const confirmed = await withTimeout(
+    haClient.sendCommand<{ external_url?: string }>({ type: 'get_config' }),
+    HA_WS_COMMAND_TIMEOUT_MS,
+    'get_config (verify)',
+  );
+  if (confirmed?.external_url !== opts.externalUrl) {
+    throw new Error(
+      `HA accepted config/core/update but external_url reads back as ` +
+        `${JSON.stringify(confirmed?.external_url)}, not ${JSON.stringify(opts.externalUrl)}`,
+    );
+  }
+  console.log(`[HA Configurator] external_url configured ✓`);
 }
 
 // Returns true if configuration needs a restart (was changed).
@@ -165,7 +184,10 @@ async function restartHACore(supervisorToken: string): Promise<void> {
   });
 }
 
-export async function configureHAForTunnel(opts: HAConfiguratorOptions): Promise<void> {
+export async function configureHAForTunnel(
+  opts: HAConfiguratorOptions,
+  haClient: HAWebSocketClient | undefined,
+): Promise<void> {
   const log = (msg: string) => console.log(`[HA Configurator] ${msg}`);
 
   if (!opts.externalUrl) {
@@ -173,11 +195,18 @@ export async function configureHAForTunnel(opts: HAConfiguratorOptions): Promise
     return;
   }
 
-  // external_url — best-effort; don't abort trusted_proxies setup if this fails
-  try {
-    await setExternalUrl(opts);
-  } catch (err: any) {
-    console.warn(`[HA Configurator] Could not set external_url: ${err.message}`);
+  // external_url — best-effort; don't abort trusted_proxies setup if this
+  // fails, or if the HA WebSocket itself isn't up (it retries on its own
+  // 5s reconnect loop — see websocket-ha.ts — so this just runs again on
+  // the Agent's next restart/reconnect rather than blocking startup here).
+  if (!haClient?.isConnected()) {
+    log('HA WebSocket not connected — skipping external_url configuration');
+  } else {
+    try {
+      await setExternalUrl(haClient, opts);
+    } catch (err: any) {
+      console.warn(`[HA Configurator] Could not set external_url: ${err.message}`);
+    }
   }
 
   // trusted_proxies — runs independently of external_url result
