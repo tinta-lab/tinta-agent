@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { enrollWithRetry, enrollBackoffMs, type EnrollDeps } from '../enrollment';
+import { enrollWithRetry, enrollBackoffMs, normalizeInstallToken, INVALID_TOKEN_RECHECK_MS, type EnrollDeps, type EnrollStatus } from '../enrollment';
 
 // Regression coverage for enrollment retry behavior: the previous
 // implementation crashed the process on the first non-2xx response,
@@ -20,30 +20,26 @@ function makeResponse(status: number, body: unknown, headers: Record<string, str
 }
 
 function makeDeps(overrides: Partial<EnrollDeps> = {}): EnrollDeps & {
-  logs: string[]; warns: string[]; errors: string[]; exitCode: number | null; sleeps: number[];
+  logs: string[]; warns: string[]; errors: string[]; sleeps: number[]; statuses: EnrollStatus[];
 } {
   const logs: string[] = [];
   const warns: string[] = [];
   const errors: string[] = [];
   const sleeps: number[] = [];
-  // Plain mutable box, not a getter — Object.assign/spread would otherwise
-  // flatten a getter to its (still-null) value at construction time, before
-  // any fetch call has had a chance to trigger exit().
-  const exitBox = { code: null as number | null };
+  const statuses: EnrollStatus[] = [];
   const deps = {
     fetchFn: vi.fn(),
     sleepFn: vi.fn(async (ms: number) => { sleeps.push(ms); }),
     log: (msg: string) => logs.push(msg),
     warn: (msg: string) => warns.push(msg),
     error: (msg: string) => errors.push(msg),
-    exit: ((code: number) => { exitBox.code = code; throw new Error(`exit(${code})`); }) as (code: number) => never,
+    onStatus: (st: EnrollStatus) => statuses.push(st),
     random: () => 0, // deterministic: no jitter in assertions
     ...overrides,
   };
   return {
     ...deps,
-    logs, warns, errors, sleeps,
-    get exitCode() { return exitBox.code; },
+    logs, warns, errors, sleeps, statuses,
   };
 }
 
@@ -82,31 +78,25 @@ describe('enrollWithRetry', () => {
 
     expect(creds.clientId).toBe('c1');
     expect(deps.fetchFn).toHaveBeenCalledTimes(3);
-    expect(deps.exitCode).toBeNull(); // must NOT have crashed the process
     expect(deps.sleeps).toEqual([2_000, 4_000]); // capped exponential, no jitter (random=0)
     expect(deps.logs.some(l => l.includes('Waiting for service-start consent'))).toBe(true);
     expect(deps.errors).toEqual([]); // this is not an error condition
+    expect(deps.statuses).toEqual([{ kind: 'waiting_consent' }]); // shown once, not per poll
   });
 
-  it('404 (token never valid) exits immediately without retrying', async () => {
+  // Was: exit(1). An exited add-on just shows as "stopped" in HA with no
+  // explanation, so it now stays up, reports the state, and parks.
+  it.each([404, 410])('%i (invalid/expired token) reports it and parks for 30 min instead of exiting', async (status) => {
     const deps = makeDeps();
-    (deps.fetchFn as any).mockResolvedValueOnce(makeResponse(404, { message: 'Install link not found' }));
+    (deps.fetchFn as any)
+      .mockResolvedValueOnce(makeResponse(status, { message: 'Install link not found' }))
+      .mockResolvedValueOnce(makeResponse(200, { clientId: 'c1', agentToken: 'jwt' }));
 
-    await expect(enrollWithRetry('https://api.example', 'install-token', deps)).rejects.toThrow('exit(1)');
+    const creds = await enrollWithRetry('https://api.example', 'install-token', deps);
 
-    expect(deps.fetchFn).toHaveBeenCalledTimes(1);
-    expect(deps.exitCode).toBe(1);
-    expect(deps.sleeps).toEqual([]); // no retry — terminal
-  });
-
-  it('410 (expired token) exits immediately without retrying', async () => {
-    const deps = makeDeps();
-    (deps.fetchFn as any).mockResolvedValueOnce(makeResponse(410, { message: 'Install link has expired' }));
-
-    await expect(enrollWithRetry('https://api.example', 'install-token', deps)).rejects.toThrow('exit(1)');
-
-    expect(deps.exitCode).toBe(1);
-    expect(deps.sleeps).toEqual([]);
+    expect(creds.clientId).toBe('c1');
+    expect(deps.statuses).toEqual([{ kind: 'invalid', httpStatus: status }]);
+    expect(deps.sleeps).toEqual([INVALID_TOKEN_RECHECK_MS]);
   });
 
   it('429 honors Retry-After when present, in seconds', async () => {
@@ -139,9 +129,9 @@ describe('enrollWithRetry', () => {
 
     await enrollWithRetry('https://api.example', 'install-token', deps);
 
-    expect(deps.exitCode).toBeNull();
     expect(deps.sleeps).toEqual([2_000]);
     expect(deps.warns.some(w => w.includes('ECONNREFUSED'))).toBe(true);
+    expect(deps.statuses).toEqual([]); // one blip is not worth alarming the installer
   });
 
   it('an unexpected 5xx retries with backoff, never exits', async () => {
@@ -152,8 +142,30 @@ describe('enrollWithRetry', () => {
 
     await enrollWithRetry('https://api.example', 'install-token', deps);
 
-    expect(deps.exitCode).toBeNull();
     expect(deps.sleeps).toEqual([2_000]);
+  });
+
+  it('reports unreachable after 3 consecutive network failures, once', async () => {
+    const deps = makeDeps();
+    (deps.fetchFn as any)
+      .mockRejectedValueOnce(new Error('ENOTFOUND'))
+      .mockRejectedValueOnce(new Error('ENOTFOUND'))
+      .mockRejectedValueOnce(new Error('ENOTFOUND'))
+      .mockRejectedValueOnce(new Error('ENOTFOUND'))
+      .mockResolvedValueOnce(makeResponse(200, { clientId: 'c1', agentToken: 'jwt' }));
+
+    await enrollWithRetry('https://api.example', 'install-token', deps);
+
+    expect(deps.statuses).toEqual([{ kind: 'unreachable', error: 'ENOTFOUND' }]);
+  });
+
+  it('requests the bare UUID even when the whole install URL was pasted', async () => {
+    const deps = makeDeps();
+    (deps.fetchFn as any).mockResolvedValueOnce(makeResponse(200, { clientId: 'c1', agentToken: 'jwt' }));
+
+    await enrollWithRetry('https://api.example', ' https://app.tinta-lab.de/install/0F8FAD5B-D9CB-469F-A165-70867728950E \n', deps);
+
+    expect(deps.fetchFn).toHaveBeenCalledWith('https://api.example/install/0f8fad5b-d9cb-469f-a165-70867728950e');
   });
 
   it('never exceeds ~8 requests per 15-minute throttle window even on sustained 403 waits', () => {
@@ -165,5 +177,15 @@ describe('enrollWithRetry', () => {
     const steadyStateInterval = enrollBackoffMs(20, noJitter);
     expect(steadyStateInterval).toBe(120_000);
     expect(900_000 / steadyStateInterval).toBeLessThan(10);
+  });
+});
+
+describe('normalizeInstallToken', () => {
+  it('extracts the UUID from a URL, trims whitespace, lowercases', () => {
+    expect(normalizeInstallToken('https://app.tinta-lab.de/install/0F8FAD5B-D9CB-469F-A165-70867728950E')).toBe('0f8fad5b-d9cb-469f-a165-70867728950e');
+    expect(normalizeInstallToken('  0f8fad5b-d9cb-469f-a165-70867728950e\n')).toBe('0f8fad5b-d9cb-469f-a165-70867728950e');
+  });
+  it('leaves a non-UUID token as-is (trimmed) so the backend decides', () => {
+    expect(normalizeInstallToken('  legacy-token ')).toBe('legacy-token');
   });
 });
