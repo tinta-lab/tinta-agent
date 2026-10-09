@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { configureHAForTunnel, type HAConfiguratorOptions } from '../ha-configurator';
+import { configureHAForTunnel, type HAConfiguratorOptions, addTrustedProxiesToHttpSection } from '../ha-configurator';
 import type { HAWebSocketClient } from '../websocket-ha';
 
 // Regression coverage for the external_url 404: the previous implementation
@@ -170,5 +170,25 @@ describe('configureHAForTunnel — external_url via HA WebSocket', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('addTrustedProxiesToHttpSection', () => {
+  it('adds both keys to an existing http: block, keeping its indentation and other keys', () => {
+    const out = addTrustedProxiesToHttpSection('default_config:\nhttp:\n    server_port: 8123\n    ssl_profile: modern\nlogger:\n  default: info\n')!;
+    expect(out).toContain('http:\n    use_x_forwarded_for: true\n    trusted_proxies:\n        - 127.0.0.1');
+    expect(out).toContain('    server_port: 8123\n    ssl_profile: modern\nlogger:');
+    expect(out.match(/use_x_forwarded_for/g)).toHaveLength(1);
+  });
+
+  it('does not duplicate an existing use_x_forwarded_for key', () => {
+    const out = addTrustedProxiesToHttpSection('http:\n  use_x_forwarded_for: true\n')!;
+    expect(out.match(/use_x_forwarded_for/g)).toHaveLength(1);
+    expect(out).toContain('  trusted_proxies:\n    - 127.0.0.1');
+    expect(out).toContain('    - 192.168.0.0/16');
+  });
+
+  it('refuses to touch an !include-style http: section', () => {
+    expect(addTrustedProxiesToHttpSection('http: !include http.yaml\n')).toBeNull();
   });
 });

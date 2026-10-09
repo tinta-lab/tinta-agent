@@ -1,0 +1,12 @@
+configuration:
+  tinta_install_token:
+    name: Код установки
+    description: >-
+      Код (или ссылка установки целиком), полученный от Tinta Lab.
+      Нужен только при первом запуске; дальше дополнение помнит подключение.
+  tinta_external_url:
+    name: Внешний адрес
+    description: Оставьте пустым — заполняется автоматически.
+  tinta_core_ws:
+    name: Сервер Tinta
+    description: Не меняйте без просьбы поддержки Tinta Lab.

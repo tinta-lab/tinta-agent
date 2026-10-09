@@ -12,10 +12,11 @@ import { ensureAccessToggleEntity, setAccessToggle, ACCESS_TOGGLE_ENTITY } from 
 import { showAccessOpenBanner, showConnectedBanner, dismissBanner } from './ha-banner';
 import { ensureTunnelRunning, stopTunnel } from './cloudflared-tunnel';
 import { createSupportExpiryTimer } from './support-expiry-timer';
-import { enrollWithRetry, type Credentials } from './enrollment';
+import { enrollWithRetry, normalizeInstallToken, type Credentials } from './enrollment';
+import { createSetupNotifier, installPageUrl } from './setup-notice';
 import { isSelfUpdateAllowed } from './self-update-guard';
 
-const AGENT_VERSION    = '2026.9.2';
+const AGENT_VERSION    = '2026.10.0';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
 const CREDENTIALS_PATH = '/data/tinta_credentials.json';
 
@@ -34,7 +35,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function loadOrEnroll(): Promise<Credentials> {
+async function loadOrEnroll(notifier: ReturnType<typeof createSetupNotifier>): Promise<Credentials> {
   // 1. Persisted credentials from previous enrollment
   if (fs.existsSync(CREDENTIALS_PATH)) {
     try {
@@ -47,17 +48,21 @@ async function loadOrEnroll(): Promise<Credentials> {
   }
 
   // 2. One-time install token enrollment
-  const installToken = process.env.TINTA_INSTALL_TOKEN;
+  const installToken = normalizeInstallToken(process.env.TINTA_INSTALL_TOKEN ?? '');
   if (installToken) {
     const coreBase = CORE_WS.replace('wss://', 'https://').replace('ws://', 'http://').replace('/tinta/ws', '');
+    const installUrl = installPageUrl(coreBase, installToken);
     const creds = await enrollWithRetry(coreBase, installToken, {
       fetchFn: fetch,
       sleepFn: sleep,
       log: (msg) => console.log(msg),
       warn: (msg) => console.warn(msg),
       error: (msg) => console.error(msg),
-      exit: (code) => process.exit(code),
+      onStatus: (status) => {
+        void notifier.show(status, status.kind === 'waiting_consent' ? installUrl : null);
+      },
     });
+    await notifier.clear();
     try { fs.writeFileSync(CREDENTIALS_PATH, JSON.stringify(creds, null, 2)); }
     catch (e: any) { console.warn('[Tinta Agent] Could not persist credentials:', e.message); }
     console.log(`[Tinta Agent] Enrolled as client ${creds.clientId}`);
@@ -68,8 +73,12 @@ async function loadOrEnroll(): Promise<Credentials> {
   const clientId = process.env.TINTA_CLIENT_ID;
   const agentToken = process.env.TINTA_AGENT_TOKEN;
   if (!clientId || !agentToken) {
-    console.error('[Tinta Agent] No credentials: set tinta_install_token, or tinta_client_id + tinta_agent_token');
-    process.exit(1);
+    // Was process.exit(1): HA then just shows the add-on as stopped. Stay up
+    // and tell the installer what's missing; saving a code in the add-on
+    // config restarts the add-on, which is what gets us out of here.
+    console.error('[Tinta Agent] No credentials: set tinta_install_token in the add-on configuration');
+    await notifier.show({ kind: 'missing_code' }, null);
+    for (;;) await sleep(60 * 60 * 1000);
   }
   return {
     clientId,
@@ -187,7 +196,23 @@ async function applyAutomationToHA(automation: Record<string, any>): Promise<voi
 // ── Main ──────────────────────────────────────────────────────────────
 
 async function main() {
-  const creds = await loadOrEnroll();
+  // HA first: needs only SUPERVISOR_TOKEN, and lets enrollment report its
+  // progress as an HA notification instead of only in the add-on log.
+  haClient = new HAWebSocketClient({
+    host: HA_HOST,
+    port: HA_PORT,
+    token: process.env.SUPERVISOR_TOKEN ?? '',
+    ssl: !SUPERVISOR_PROXY && process.env.HA_SSL === 'true',
+    supervisorProxy: SUPERVISOR_PROXY,
+  });
+  try {
+    await haClient.connect();
+    log('Connected to Home Assistant');
+  } catch (err: any) {
+    log('Failed to connect to HA:', err.message, '— continuing anyway');
+  }
+
+  const creds = await loadOrEnroll(createSetupNotifier(haClient));
   const CLIENT_ID   = creds.clientId;
   const AGENT_TOKEN = creds.agentToken;
   const EXTERNAL_URL = creds.externalUrl || process.env.TINTA_EXTERNAL_URL || '';
@@ -201,28 +226,12 @@ async function main() {
   // what actually picks it up for agents enrolled before this existed.
   ensureTunnelRunning(creds.tunnelToken);
 
-  // Connect to HA WebSocket
-  haClient = new HAWebSocketClient({
-    host: HA_HOST,
-    port: HA_PORT,
-    token: process.env.SUPERVISOR_TOKEN ?? '',
-    ssl: !SUPERVISOR_PROXY && process.env.HA_SSL === 'true',
-    supervisorProxy: SUPERVISOR_PROXY,
-  });
-
   supportExpiry = createSupportExpiryTimer({
     haClient,
     getToggleKnownState: () => toggleKnownState,
     setToggleKnownState: (state) => { toggleKnownState = state; },
     log,
   });
-
-  try {
-    await haClient.connect();
-    log('Connected to Home Assistant');
-  } catch (err: any) {
-    log('Failed to connect to HA:', err.message, '— continuing anyway');
-  }
 
   // Ensure tinta-support HA user exists and access toggle helper entity
   if (haClient.isConnected()) {

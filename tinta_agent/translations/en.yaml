@@ -1,0 +1,12 @@
+configuration:
+  tinta_install_token:
+    name: Install code
+    description: >-
+      The code (or the whole install link) you received from Tinta Lab.
+      Used once on first start; afterwards the add-on remembers its connection.
+  tinta_external_url:
+    name: External address
+    description: Leave empty — filled in automatically from Tinta Lab.
+  tinta_core_ws:
+    name: Tinta server
+    description: Do not change unless Tinta Lab support asks you to.

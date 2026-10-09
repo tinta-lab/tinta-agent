@@ -106,6 +106,31 @@ async function setExternalUrl(haClient: HAWebSocketClient, opts: HAConfiguratorO
   console.log(`[HA Configurator] external_url configured ✓`);
 }
 
+// Inserts use_x_forwarded_for/trusted_proxies into an existing inline
+// `http:` block, matching its indentation. Without them HA answers every
+// request that arrives through the tunnel with 400 Bad Request, so this used
+// to be a silent "remote access doesn't work" on any HA whose http: section
+// already existed (e.g. for ssl or a custom port). Returns null when the
+// block isn't a plain inline mapping we can safely extend.
+export function addTrustedProxiesToHttpSection(content: string): string | null {
+  const lines = content.split('\n');
+  const start = lines.findIndex(l => /^http:\s*(#.*)?$/.test(l));
+  if (start === -1) return null; // `http: !include ...` or similar — leave it
+  let end = start + 1;
+  let indent = '';
+  while (end < lines.length && (/^\s+\S/.test(lines[end]) || lines[end].trim() === '')) {
+    if (!indent && /^\s+\S/.test(lines[end])) indent = lines[end].match(/^(\s+)/)![1];
+    end++;
+  }
+  if (!indent) indent = '  ';
+  const block = lines.slice(start + 1, end).join('\n');
+  const insert: string[] = [];
+  if (!/^\s+use_x_forwarded_for:/m.test(block)) insert.push(`${indent}use_x_forwarded_for: true`);
+  insert.push(`${indent}trusted_proxies:`, ...TRUSTED_PROXIES.map(ip => `${indent}${indent}- ${ip}`));
+  lines.splice(start + 1, 0, ...insert);
+  return lines.join('\n');
+}
+
 // Returns true if configuration needs a restart (was changed).
 function ensureHttpTrustedProxies(configDir: string): boolean {
   const log = (m: string) => console.log(`[HA Configurator] ${m}`);
@@ -149,8 +174,14 @@ function ensureHttpTrustedProxies(configDir: string): boolean {
   }
 
   if (hasHttpSection && !hasTrustedProxies) {
-    log('⚠ http: section exists but has no trusted_proxies — add manually');
-    return false;
+    const patched = addTrustedProxiesToHttpSection(content);
+    if (patched === null) {
+      log('⚠ http: section exists but could not be patched safely (e.g. !include) — add trusted_proxies manually');
+      return false;
+    }
+    fs.writeFileSync(configFile, patched, 'utf8');
+    log('Added trusted_proxies to existing http: section ✓');
+    return true;
   }
 
   // No http: section at all — append a complete one.
