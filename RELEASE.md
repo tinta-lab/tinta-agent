@@ -10,12 +10,12 @@ before changing the pipeline.
 push main            → CI (tsc + unit tests) + build.yml → GHCR :dev
                         Never touched by production Hubs.
 
-bump version          package.json / config.yaml / src/agent.ts's
-                        AGENT_VERSION must all match. Add a CHANGELOG.md
-                        entry (and, for a significant release, a matching
-                        README.md "## Changelog" entry).
+bump version          package.json and src/agent.ts's AGENT_VERSION
+                        (+ CHANGELOG.md entry). Do NOT bump config.yaml's
+                        `version:` yet — see "config.yaml is the release
+                        switch" below.
 
-tag vX.Y.Z-beta        → build.yml builds+pushes GHCR :vX.Y.Z-beta and :beta
+tag X.Y.Z-beta         → build.yml builds+pushes GHCR :vX.Y.Z-beta and :beta
                         (channel=beta, since the tag contains "-beta").
                         Does NOT touch :stable, :vX.Y.Z, or the minor-alias
                         tag — no real install can pull this by accident.
@@ -37,7 +37,9 @@ verify the RC          Don't trust the manifest alone — pull and RUN each
                           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
                             aquasec/trivy:latest image --severity CRITICAL,HIGH IMAGE:vX.Y.Z-beta
 
-promote to stable      tag vX.Y.Z (no -beta) on the SAME commit as the beta
+promote to stable      tag X.Y.Z (no "v", no -beta — the image tag IS the
+                        git tag, and HA pulls IMAGE:<config.yaml version>)
+                        on the SAME commit as the beta
                         tag → build.yml rebuilds from that commit and
                         pushes :vX.Y.Z, :X.Y (minor alias), and :stable —
                         all three land on one identical multiarch manifest.
@@ -62,6 +64,24 @@ confirm all three tags  docker manifest inspect IMAGE:vX.Y.Z
                         (`docker pull` prints it as "Digest: sha256:...")
                         as the immutable reference for this release.
 ```
+
+## config.yaml is the release switch
+
+Home Assistant's add-on store reads `tinta_agent/config.yaml` straight from
+`main` of this repo. The moment `version:` there changes, **every client's
+HA shows "update available"** and pulls `IMAGE:<that version>`. If that
+image tag doesn't exist yet, the update fails for everyone ("An unknown
+error occurred with app …_tinta_agent").
+
+That happened on 2026-10-09: 2026.10.0 was bumped in config.yaml together
+with the code while only `v2026.10.0-beta` had been built. So:
+
+1. Code + package.json/agent.ts version + CHANGELOG → main, tag the beta.
+2. Verify the beta image.
+3. Tag `X.Y.Z` (stable) and wait for build.yml to finish.
+4. Only then bump `config.yaml` `version:` to `X.Y.Z` on main.
+5. Only after a real hub ran it, raise the backend's
+   `AGENT_LATEST_STABLE_VERSION` (that one pushes updates remotely).
 
 ## Why this exists
 
