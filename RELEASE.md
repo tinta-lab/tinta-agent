@@ -10,6 +10,21 @@ before changing the pipeline.
 push main            → CI (tsc + unit tests) + build.yml → GHCR :dev
                         Never touched by production Hubs.
 
+every build.yml run   build (multiarch, pushed by digest only — untagged)
+                        → scan: Trivy per arch (amd64/arm64/armv7) on that
+                          exact digest; fails on any CRITICAL with a fix
+                          available, prints a table in the job log, and
+                          uploads the CRITICAL+HIGH report to Security →
+                          Code scanning (one category per arch)
+                        → promote: points the tags at the same digest and
+                          verifies each one — nothing is rebuilt after the
+                          scan. A failed scan publishes nothing.
+                        Tags must look like a release: X.Y.Z (stable) or
+                        [v]X.Y.Z-beta[.N]; anything else fails the build.
+                        Release tags are immutable (repo ruleset): a tag
+                        can't be moved or deleted, so a bad release is
+                        fixed with a new version, not by retagging.
+
 bump version          package.json and src/agent.ts's AGENT_VERSION
                         (+ CHANGELOG.md entry). Do NOT bump config.yaml's
                         `version:` yet — see "config.yaml is the release
@@ -30,12 +45,12 @@ verify the RC          Don't trust the manifest alone — pull and RUN each
                         This is exactly the check that would have caught
                         the 2026.8.1–2026.8.3 bug where every non-amd64
                         build silently shipped amd64 content.
-                        Also run Trivy directly against the image (the
-                        SARIF-format scan in build.yml doesn't print a
-                        human-readable summary in the Actions log — pull
-                        and scan it yourself for a real answer):
-                          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
-                            aquasec/trivy:latest image --severity CRITICAL,HIGH IMAGE:vX.Y.Z-beta
+                        Review the scan: the build's "scan (linux/<arch>)"
+                        jobs print the CRITICAL table per arch, and Security
+                        → Code scanning has the full CRITICAL+HIGH report
+                        per arch. HIGHs don't block publishing — decide on
+                        each before promoting (e.g. 2026-10-28: go-jose in
+                        cloudflared, alert #233, waits for upstream).
 
 promote to stable      tag X.Y.Z (no "v", no -beta — the image tag IS the
                         git tag, and HA pulls IMAGE:<config.yaml version>)
