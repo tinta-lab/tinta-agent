@@ -62,7 +62,7 @@ RUN apk add --no-cache nodejs npm wget ca-certificates
 # `apk upgrade` — so the rest stays exactly as HA ships it. curl/libcurl are
 # used by bashio for the Supervisor API.
 RUN set -eu; pkgs=""; \
-    for p in curl libcurl libssl3 libcrypto3 brotli-libs bind-libs bind-tools; do \
+    for p in curl libcurl libssl3 libcrypto3 brotli-libs bind-libs bind-tools musl musl-utils; do \
       if apk info -e "$p" >/dev/null; then pkgs="$pkgs $p"; fi; \
     done; \
     apk add --no-cache --upgrade $pkgs
