@@ -130,7 +130,8 @@ jobs:
 
       # Blocks publishing on any CRITICAL that has a fix available. Unfixed
       # CRITICALs and all HIGHs are not blocking — they show up in the report
-      # below (Security → Code scanning) and need a human decision.
+      # below (Security → Code scanning, one category per architecture:
+      # ...:scan/platform:linux/<arch>) and need a human decision.
       - name: Trivy gate (CRITICAL, fixable)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -140,8 +141,8 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
 
-      - name: Trivy report (CRITICAL+HIGH, amd64)
-        if: always() && matrix.platform == 'linux/amd64'
+      - name: Trivy report (CRITICAL+HIGH)
+        if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: ${{ env.IMAGE }}@${{ needs.build.outputs.digest }}
@@ -152,7 +153,7 @@ jobs:
           exit-code: '0'
 
       - name: Upload Trivy SARIF
-        if: always() && matrix.platform == 'linux/amd64'
+        if: always()
         uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
         with:
           sarif_file: trivy-results.sarif
