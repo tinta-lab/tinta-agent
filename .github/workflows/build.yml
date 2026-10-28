@@ -9,6 +9,12 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   IMAGE: ghcr.io/tinta-lab/tinta-agent
 
+# build → scan → promote. The image is pushed by digest only (no tag, so
+# nothing can pull it by name yet), Trivy scans exactly that digest for every
+# architecture, and only then are the version/channel tags pointed at the
+# same digest. What gets published is what was scanned — nothing is rebuilt
+# after the scan.
+#
 # Third-party actions are pinned to full commit SHAs (a tag or branch like
 # trivy-action@master can be moved to different code at any time); the
 # comment next to each is the release it corresponds to.
@@ -19,24 +25,12 @@ jobs:
       contents: read
       packages: write
     outputs:
+      digest: ${{ steps.build.outputs.digest }}
       version: ${{ steps.meta.outputs.version }}
+      channel: ${{ steps.meta.outputs.channel }}
+      minor_alias: ${{ steps.meta.outputs.minor_alias }}
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
-
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-
-      - name: Login to GHCR
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       # ── Resolve version + channel ──────────────────────────────────────
       - name: Resolve version and channel
         id: meta
@@ -77,19 +71,30 @@ jobs:
           echo "minor_alias=$MINOR_ALIAS" >> $GITHUB_OUTPUT
           echo "Channel: $CHANNEL  Version: $VERSION"
 
-      # ── Build & push multi-arch ────────────────────────────────────────
-      - name: Build and push
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Build multi-arch, push by digest only (untagged) ───────────────
+      - name: Build and push (by digest)
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./tinta_agent
           file: ./tinta_agent/Dockerfile
           platforms: linux/amd64,linux/arm64,linux/arm/v7
-          push: true
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
-            ${{ env.IMAGE }}:${{ steps.meta.outputs.channel }}
-            ${{ steps.meta.outputs.minor_alias != '' && format('{0}:{1}', env.IMAGE, steps.meta.outputs.minor_alias) || '' }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
           labels: |
             org.opencontainers.image.title=Tinta Agent
             org.opencontainers.image.description=Tinta Lab Home Assistant Agent
@@ -97,34 +102,97 @@ jobs:
             org.opencontainers.image.source=https://github.com/tinta-lab/tinta-agent
             org.opencontainers.image.licenses=UNLICENSED
 
-  # ── Security scan (amd64 manifest) ──────────────────────────────────
-  # Separate job so the third-party scanner never runs with the
-  # packages: write token that can publish images. The image is public, so
-  # pulling it needs no credentials.
+      - name: Digest
+        run: echo "Built ${IMAGE}@${{ steps.build.outputs.digest }}"
+
+  # ── Security gate, per architecture ──────────────────────────────────
+  # No packages: write here: the third-party scanner never holds a token that
+  # can publish. The package is public, so pulling by digest needs no login.
   scan:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write   # for trivy SARIF upload
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64, linux/arm/v7]
+    env:
+      TRIVY_PLATFORM: ${{ matrix.platform }}
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
-      - name: Trivy vulnerability scan
+      # Blocks publishing on any CRITICAL that has a fix available. Unfixed
+      # CRITICALs and all HIGHs are not blocking — they show up in the report
+      # below (Security → Code scanning) and need a human decision.
+      - name: Trivy gate (CRITICAL, fixable)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: ${{ env.IMAGE }}:${{ needs.build.outputs.version }}
+          image-ref: ${{ env.IMAGE }}@${{ needs.build.outputs.digest }}
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+      - name: Trivy report (CRITICAL+HIGH, amd64)
+        if: always() && matrix.platform == 'linux/amd64'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ needs.build.outputs.digest }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
-          exit-code: '0'           # don't fail build, just report
+          ignore-unfixed: false
+          exit-code: '0'
 
       - name: Upload Trivy SARIF
+        if: always() && matrix.platform == 'linux/amd64'
         uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
-        if: always()
         with:
           sarif_file: trivy-results.sarif
-        continue-on-error: true   # SARIF upload requires Advanced Security (may not be available on org)
+        continue-on-error: true
+
+  # ── Publish: point the tags at the scanned digest ────────────────────
+  promote:
+    needs: [build, scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the scanned digest
+        env:
+          DIGEST: ${{ needs.build.outputs.digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+          CHANNEL: ${{ needs.build.outputs.channel }}
+          MINOR_ALIAS: ${{ needs.build.outputs.minor_alias }}
+        run: |
+          set -euo pipefail
+          TAGS=("$VERSION" "$CHANNEL")
+          [ -n "$MINOR_ALIAS" ] && TAGS+=("$MINOR_ALIAS")
+          ARGS=()
+          for t in "${TAGS[@]}"; do ARGS+=(-t "${IMAGE}:${t}"); done
+          docker buildx imagetools create "${ARGS[@]}" "${IMAGE}@${DIGEST}"
+          # Every tag must now resolve to exactly the digest that was scanned.
+          for t in "${TAGS[@]}"; do
+            got=$(docker buildx imagetools inspect "${IMAGE}:${t}" --format '{{json .Manifest}}' | jq -r .digest)
+            echo "${IMAGE}:${t} -> ${got}"
+            if [ "$got" != "$DIGEST" ]; then
+              echo "::error::${IMAGE}:${t} resolves to ${got}, not the scanned ${DIGEST}"
+              exit 1
+            fi
+          done
