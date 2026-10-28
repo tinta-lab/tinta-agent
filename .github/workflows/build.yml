@@ -9,23 +9,29 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   IMAGE: ghcr.io/tinta-lab/tinta-agent
 
+# Third-party actions are pinned to full commit SHAs (a tag or branch like
+# trivy-action@master can be moved to different code at any time); the
+# comment next to each is the release it corresponds to.
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-      security-events: write   # for trivy SARIF upload
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -38,11 +44,18 @@ jobs:
           REF="${GITHUB_REF}"
           if [[ $REF == refs/tags/* ]]; then
             VERSION="${REF#refs/tags/}"
-            # beta tag: v1.0.0-beta.1 or 2026.4.1-beta
-            if [[ $VERSION == *-beta* ]]; then
+            # Only release-shaped tags may publish. Anything without "-beta"
+            # used to count as stable, so a stray tag ("test", "v2026.10.0")
+            # would have been built and pushed as :stable.
+            #   stable: 2026.10.0            (no "v" — image tag == git tag)
+            #   beta:   [v]2026.10.0-beta[.N]
+            if [[ $VERSION =~ ^[0-9]{4}\.[0-9]{1,2}\.[0-9]+$ ]]; then
+              CHANNEL="stable"
+            elif [[ $VERSION =~ ^v?[0-9]{4}\.[0-9]{1,2}\.[0-9]+-beta(\.[0-9]+)?$ ]]; then
               CHANNEL="beta"
             else
-              CHANNEL="stable"
+              echo "::error::Tag '$VERSION' is not a release tag (YYYY.M.N or [v]YYYY.M.N-beta[.N]); not publishing anything."
+              exit 1
             fi
             # major.minor alias: 2026.4.1 → 2026.4 — stable only. A beta tag
             # (2026.4.1-beta) strips to the exact same "2026.4" via %.* as a
@@ -67,7 +80,7 @@ jobs:
       # ── Build & push multi-arch ────────────────────────────────────────
       - name: Build and push
         id: build
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./tinta_agent
           file: ./tinta_agent/Dockerfile
@@ -84,18 +97,33 @@ jobs:
             org.opencontainers.image.source=https://github.com/tinta-lab/tinta-agent
             org.opencontainers.image.licenses=UNLICENSED
 
-      # ── Security scan (amd64 manifest) ────────────────────────────────
-      - name: Trivy vulnerability scan
-        uses: aquasecurity/trivy-action@master
+  # ── Security scan (amd64 manifest) ──────────────────────────────────
+  # Separate job so the third-party scanner never runs with the
+  # packages: write token that can publish images. The image is public, so
+  # pulling it needs no credentials.
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # for trivy SARIF upload
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          image-ref: ${{ env.IMAGE }}:${{ steps.meta.outputs.version }}
+          persist-credentials: false
+
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ needs.build.outputs.version }}
           format: sarif
           output: trivy-results.sarif
           severity: CRITICAL,HIGH
           exit-code: '0'           # don't fail build, just report
 
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
         if: always()
         with:
           sarif_file: trivy-results.sarif

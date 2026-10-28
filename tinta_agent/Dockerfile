@@ -92,9 +92,10 @@ RUN set -eu; \
 
 WORKDIR /app
 
-# Install ALL deps (including devDeps for tsc build)
-COPY package.json ./
-RUN npm install
+# Install ALL deps (including devDeps for tsc build) exactly as locked —
+# `npm install` without the lockfile resolved fresh versions on every build.
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 
 # Copy source and build
 COPY tsconfig.json ./
@@ -102,7 +103,7 @@ COPY src ./src
 RUN npm run build
 
 # Remove devDependencies after build
-RUN npm prune --production
+RUN npm prune --omit=dev
 
 COPY assets /app/assets
 COPY run.sh /
