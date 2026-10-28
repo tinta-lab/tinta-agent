@@ -54,22 +54,24 @@ verify the RC          Don't trust the manifest alone — pull and RUN each
 
 promote to stable      tag X.Y.Z (no "v", no -beta — the image tag IS the
                         git tag, and HA pulls IMAGE:<config.yaml version>)
-                        on the SAME commit as the beta
-                        tag → build.yml rebuilds from that commit and
-                        pushes :vX.Y.Z, :X.Y (minor alias), and :stable —
-                        all three land on one identical multiarch manifest.
-                        This IS a rebuild, not a copy of the beta artifact
-                        (do not try to `docker buildx imagetools create`
-                        a manual promotion — that needs write:packages on
-                        whatever token is logged in locally, which a
-                        personal `gh auth token` does NOT have; only the
-                        workflow's own `secrets.GITHUB_TOKEN`, scoped via
-                        `permissions: packages: write` in build.yml, is
-                        meant to publish these tags). Since it's a fresh
-                        build, re-run the same real-execution verification
-                        against the actual :vX.Y.Z tag afterward — don't
-                        assume it's identical to the beta digest (it isn't;
-                        confirm the digests differ, then re-verify content).
+                        on the SAME commit as the verified beta tag.
+                        build.yml does NOT rebuild: it takes the published
+                        image of the highest [v]X.Y.Z-beta[.N] on that
+                        commit, checks that all three platforms carry
+                        org.opencontainers.image.revision == the commit,
+                        re-scans that digest with today's Trivy DB, then
+                        points :X.Y.Z, :X.Y (minor alias) and :stable at it
+                        and verifies stable == beta digest. So what ships
+                        is byte-for-byte the image you tested.
+                        Blocked (nothing published) if: no beta on this
+                        commit, the beta image is missing or was built
+                        before 2026-10-28 (no revision label), the scan
+                        finds a fixable CRITICAL, or :X.Y.Z already exists
+                        (published version tags are never moved — re-runs
+                        of a finished release stop without changes).
+                        Don't promote by hand with `docker buildx imagetools
+                        create`: only the workflow's GITHUB_TOKEN
+                        (`permissions: packages: write`) publishes tags.
 
 confirm all three tags  docker manifest inspect IMAGE:vX.Y.Z
                         docker manifest inspect IMAGE:X.Y

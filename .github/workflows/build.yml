@@ -15,9 +15,18 @@ env:
 # same digest. What gets published is what was scanned — nothing is rebuilt
 # after the scan.
 #
+# Stable tags don't build at all: they promote the beta image built from the
+# same commit (.github/scripts/release_guard.py checks that it exists and was
+# built from this commit), re-scan that digest with today's Trivy DB, and
+# point the stable tags at it. Published version tags are never moved.
+#
 # Third-party actions are pinned to full commit SHAs (a tag or branch like
 # trivy-action@master can be moved to different code at any time); the
 # comment next to each is the release it corresponds to.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,7 +35,9 @@ jobs:
       contents: read
       packages: write
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
+      digest: ${{ steps.build.outputs.digest || steps.beta.outputs.digest }}
+      beta: ${{ steps.beta.outputs.beta }}
+      mode: ${{ steps.meta.outputs.mode }}
       version: ${{ steps.meta.outputs.version }}
       channel: ${{ steps.meta.outputs.channel }}
       minor_alias: ${{ steps.meta.outputs.minor_alias }}
@@ -70,17 +81,36 @@ jobs:
           echo "version=$VERSION"     >> $GITHUB_OUTPUT
           echo "channel=$CHANNEL"     >> $GITHUB_OUTPUT
           echo "minor_alias=$MINOR_ALIAS" >> $GITHUB_OUTPUT
-          echo "Channel: $CHANNEL  Version: $VERSION"
+          # stable: promote the tested beta of this commit; beta/dev: build
+          if [[ $CHANNEL == "stable" ]]; then MODE=promote; else MODE=build; fi
+          echo "mode=$MODE"           >> $GITHUB_OUTPUT
+          echo "Channel: $CHANNEL  Version: $VERSION  Mode: $MODE"
 
+      # Full history + tags: the stable path looks up beta tags on this commit.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          fetch-depth: 0
 
-      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      # A finished release re-run (or a version reused by mistake) stops here
+      # without touching anything already published.
+      - name: Release guard — version not published yet
+        if: steps.meta.outputs.channel != 'dev'
+        run: python3 .github/scripts/release_guard.py unpublished "$IMAGE" "${{ steps.meta.outputs.version }}"
 
-      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Stable — resolve the tested beta image (no rebuild)
+        id: beta
+        if: steps.meta.outputs.mode == 'promote'
+        run: python3 .github/scripts/release_guard.py beta-digest "$IMAGE" "${{ steps.meta.outputs.version }}" "$GITHUB_SHA"
+
+      - if: steps.meta.outputs.mode == 'build'
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+
+      - if: steps.meta.outputs.mode == 'build'
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Login to GHCR
+        if: steps.meta.outputs.mode == 'build'
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
@@ -88,8 +118,11 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       # ── Build multi-arch, push by digest only (untagged) ───────────────
+      # The revision label is what lets a later stable tag prove this image
+      # was built from its commit.
       - name: Build and push (by digest)
         id: build
+        if: steps.meta.outputs.mode == 'build'
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
         with:
           context: ./tinta_agent
@@ -100,11 +133,13 @@ jobs:
             org.opencontainers.image.title=Tinta Agent
             org.opencontainers.image.description=Tinta Lab Home Assistant Agent
             org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.source=https://github.com/tinta-lab/tinta-agent
             org.opencontainers.image.licenses=UNLICENSED
 
       - name: Digest
-        run: echo "Built ${IMAGE}@${{ steps.build.outputs.digest }}"
+        run: |
+          echo "${{ steps.meta.outputs.mode }}: ${IMAGE}@${{ steps.build.outputs.digest || steps.beta.outputs.digest }}"
 
   # ── Security gate, per architecture ──────────────────────────────────
   # No packages: write here: the third-party scanner never holds a token that
@@ -169,7 +204,16 @@ jobs:
       packages: write
 
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Checked again right before publishing: the scan takes minutes.
+      - name: Release guard — version not published yet
+        if: needs.build.outputs.channel != 'dev'
+        run: python3 .github/scripts/release_guard.py unpublished "$IMAGE" "${{ needs.build.outputs.version }}"
 
       - name: Login to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
@@ -184,6 +228,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           CHANNEL: ${{ needs.build.outputs.channel }}
           MINOR_ALIAS: ${{ needs.build.outputs.minor_alias }}
+          BETA: ${{ needs.build.outputs.beta }}
         run: |
           set -euo pipefail
           TAGS=("$VERSION" "$CHANNEL")
@@ -200,3 +245,12 @@ jobs:
               exit 1
             fi
           done
+          # Stable: the promoted image must still be exactly the tested beta.
+          if [ -n "$BETA" ]; then
+            beta_now=$(docker buildx imagetools inspect "${IMAGE}:${BETA}" --format '{{json .Manifest}}' | jq -r .digest)
+            echo "${IMAGE}:${BETA} (tested beta) -> ${beta_now}"
+            if [ "$beta_now" != "$DIGEST" ]; then
+              echo "::error::stable ${DIGEST} != beta ${BETA} ${beta_now}"
+              exit 1
+            fi
+          fi
