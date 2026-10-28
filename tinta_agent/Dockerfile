@@ -55,6 +55,24 @@ FROM base-${TARGETARCH} AS base
 # Install Node.js 20 + npm
 RUN apk add --no-cache nodejs npm wget ca-certificates
 
+# Security fixes on top of the frozen 3.21 bases (see BASE_TAG above), found
+# by Trivy 2026-10-28 — armv7-base is the most outdated (alpine 3.21.5:
+# CRITICAL in bind and in 32-bit OpenSSL). Only the affected packages are
+# upgraded, and only where the base actually has them — not a blanket
+# `apk upgrade` — so the rest stays exactly as HA ships it. curl/libcurl are
+# used by bashio for the Supervisor API.
+RUN set -eu; pkgs=""; \
+    for p in curl libcurl libssl3 libcrypto3 brotli-libs bind-libs bind-tools; do \
+      if apk info -e "$p" >/dev/null; then pkgs="$pkgs $p"; fi; \
+    done; \
+    apk add --no-cache --upgrade $pkgs
+
+# tempio (HA's templating CLI) ships in the base image built with Go 1.23.3
+# — 1 CRITICAL + 38 HIGH stdlib/x/crypto findings. Nothing here uses it:
+# not run.sh, not bashio, not the s6 init scripts (checked 2026-10-28 by
+# grepping the 3.21 base for references). Re-check before relying on it.
+RUN rm -f /usr/bin/tempio
+
 # Bundle cloudflared itself — the agent manages its own tunnel process (see
 # src/cloudflared-tunnel.ts) using the token Tinta Core hands back on
 # enroll/register, so clients never need to install a separate Cloudflared
@@ -64,24 +82,25 @@ RUN apk add --no-cache nodejs npm wget ca-certificates
 # releases/latest/download/... — this binary gets full control of the
 # agent's network tunnel path, so an unpinned "latest" fetch is a real
 # supply-chain risk (non-reproducible builds, no integrity check on a
-# privileged binary). cloudflare/cloudflared does not publish an official
-# checksums file per release, so the hashes below were computed directly
-# from the exact release assets on first pinning this version:
-#   version:   2026.9.1  (https://github.com/cloudflare/cloudflared/releases/tag/2026.9.1)
-#   verified:  2026-09-15, by downloading each linux-<arch> asset from that
-#              tagged release and running sha256sum locally (not copied from
-#              a third party) — re-derive the same way when bumping.
+# privileged binary). There is no separate checksums file, but the release
+# notes list a SHA-256 per asset, and GitHub reports its own `digest` for
+# each uploaded asset. The hashes below match all three independent sources:
+#   version:   2026.10.5  (https://github.com/cloudflare/cloudflared/releases/tag/2026.10.5)
+#   verified:  2026-10-28 — release-notes checksum == GitHub asset digest
+#              (gh api repos/cloudflare/cloudflared/releases/tags/<v>) ==
+#              sha256sum of the downloaded asset. Re-check all three when
+#              bumping. (2026.9.1 had Trivy HIGHs in its Go dependencies.)
 #
 # Uses TARGETARCH directly (amd64/arm64/arm) — this already matches
 # cloudflared's own release asset naming (cloudflared-linux-amd64/arm64/arm)
 # with no translation table needed, unlike the HA base image names above.
 ARG TARGETARCH
-ARG CLOUDFLARED_VERSION=2026.9.1
+ARG CLOUDFLARED_VERSION=2026.10.5
 RUN set -eu; \
     case "${TARGETARCH}" in \
-      amd64) CF_SHA256=03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc ;; \
-      arm64) CF_SHA256=3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3 ;; \
-      arm)   CF_SHA256=093ffa3638ab2b636de63c43a8c68f96a69cf71f9699dd8277a91b160b0f4fc0 ;; \
+      amd64) CF_SHA256=e1bc0cf084fd9e590554fe769a86b1db46701c3f847a43d902f7b974a4e16298 ;; \
+      arm64) CF_SHA256=72e0d05a67e09da87cf495e409a28c3cc5994dd23fc66a982eebea6a55923b7d ;; \
+      arm)   CF_SHA256=a018911e1bbfd739937f3011f589e9e73245baeee14742f8b3413472bb007adc ;; \
       *) echo "Unsupported TARGETARCH for cloudflared: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     wget -q -O /usr/local/bin/cloudflared \
@@ -94,8 +113,18 @@ WORKDIR /app
 
 # Install ALL deps (including devDeps for tsc build) exactly as locked —
 # `npm install` without the lockfile resolved fresh versions on every build.
+#
+# The arm64/armv7 stages run under QEMU in CI, where Node's libuv io_uring
+# backend can hang forever (2026-10-28: arm64 `npm ci` sat for 30+ minutes
+# while amd64/armv7 finished in a minute). io_uring off (this ENV also
+# stays set at runtime — harmless, libuv falls back to epoll), and each
+# attempt bounded so a hang becomes a retry instead of a stuck job.
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+ENV UV_USE_IO_URING=0
+RUN for i in 1 2 3; do \
+      timeout 300 npm ci --no-audit --no-fund && exit 0; \
+      echo "npm ci attempt $i failed or timed out" >&2; \
+    done; exit 1
 
 # Copy source and build
 COPY tsconfig.json ./
