@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026.11.0
+- Privacy: the agent no longer sends device names or states to Tinta Core. Until now it forwarded the state of lights, switches, covers, climate and alarm panels (`state_update`) on every change and every 5 minutes; Tinta Core discarded them, but the data still left the home. Only the support access toggle is forwarded now; the 5-minute metrics stay numbers only (CPU, memory, disk, uptime, number of devices and automations).
+
 ## 2026.10.0
 - Установка: статус настройки теперь виден прямо в Home Assistant (уведомление «Tinta Agent — настройка»), а не только в журнале аддона: «откройте ссылку и подтвердите» (со ссылкой), «код недействителен/истёк», «сервер Tinta недоступен», «код не введён».
 - Установка: при недействительном/истёкшем коде или пустой конфигурации аддон больше не завершается (раньше он просто выглядел «остановленным» без объяснений), а показывает уведомление и ждёт нового кода.
