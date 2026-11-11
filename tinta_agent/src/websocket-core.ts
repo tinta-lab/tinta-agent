@@ -203,12 +203,6 @@ export class TintaCoreSocket {
     }
   }
 
-  sendStateUpdate(entities: Record<string, any>[]) {
-    if (this.socket?.connected) {
-      this.socket.emit('state_update', { clientId: this.clientId, entities });
-    }
-  }
-
   sendMetrics(metrics: {
     clientId: string;
     cpuPercent: number;

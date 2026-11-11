@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { HAWebSocketClient } from './websocket-ha';
 import { TintaCoreSocket } from './websocket-core';
-import { haStateToTintaEntity, buildHACommand } from './entities';
+import { buildHACommand } from './entities';
 import { configureHAForTunnel } from './ha-configurator';
 import { ensureSupportUser, setSupportUserActive, getSupportUserId } from './ha-support-user';
 import { fetchSupportActivityLog } from './ha-activity-log';
@@ -16,7 +16,7 @@ import { enrollWithRetry, normalizeInstallToken, type Credentials } from './enro
 import { createSetupNotifier, installPageUrl } from './setup-notice';
 import { isSelfUpdateAllowed } from './self-update-guard';
 
-const AGENT_VERSION    = '2026.10.0';
+const AGENT_VERSION    = '2026.11.0';
 const CORE_WS          = process.env.TINTA_CORE_WS ?? 'wss://api.tinta-lab.de/tinta/ws';
 const CREDENTIALS_PATH = '/data/tinta_credentials.json';
 
@@ -267,8 +267,8 @@ async function main() {
         return;
       }
 
-      const entity = haStateToTintaEntity(newState);
-      if (entity) coreSocket?.sendStateUpdate([entity]);
+      // Nothing else is forwarded: device names and states stay in the home
+      // (Tinta Lab Datenschutz). Only the access toggle above leaves it.
     });
   }
 
@@ -438,13 +438,12 @@ async function main() {
     res.end(JSON.stringify(status));
   }).listen(3100, () => log('Health server on :3100'));
 
-  // Periodic state sync + metrics every 5 minutes
+  // Metrics every 5 minutes (numbers only)
   setInterval(async () => {
     if (!haClient.isConnected()) return;
     try {
+      // Counted here; the states themselves are never sent.
       const states = await haClient.getStates();
-      const entities = states.map(haStateToTintaEntity).filter(Boolean);
-      coreSocket.sendStateUpdate(entities as any[]);
 
       const deviceCount     = states.filter(s => !s.entity_id.startsWith('automation.')).length;
       const automationCount = states.filter(s => s.entity_id.startsWith('automation.')).length;
@@ -459,7 +458,7 @@ async function main() {
         uptimeSeconds: getUptimeSeconds(),
       });
 
-      log(`State sync: ${entities.length} entities, ${deviceCount} devices, ${automationCount} automations`);
+      log(`Metrics: ${deviceCount} devices, ${automationCount} automations`);
     } catch (err: any) {
       log('State sync error:', err.message);
     }
